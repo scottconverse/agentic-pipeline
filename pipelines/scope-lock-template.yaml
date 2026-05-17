@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
+# Scope lock - copy to .agent-runs/<run-id>/scope-lock.yaml and fill in
+# before product work starts. This file proves the run is working on the
+# rung the canonical release plan says is next.
+
+current_rung: ""
+canonical_source: "docs/spec/release-plan.md"
+rung_title: ""
+proves: ""
+
+# Modules or package areas named by the canonical rung.
+required_modules: []
+
+# Terms that are expected for this rung's feature work. These are used
+# as positive orientation signals; the hard block is the forbidden list.
+allowed_feature_terms: []
+
+# Terms that belong to later rungs or out-of-scope work. If the user
+# prompt, edited path, docs, or commit message contains one of these,
+# the pipeline stops with SCOPE_CONFLICT unless Scott explicitly amends
+# the rung scope.
+forbidden_feature_terms_without_replan: []
+
+# Optional exact bullets copied from the canonical rung section. When
+# present, check_scope_lock.py requires each to appear in the release plan.
+scope_bullets: []
+
+# Optional exact exit criteria copied from the canonical rung section.
+exit_criteria: []
+
+# Conditions that force a stop before edits.
+replan_required_if:
+  - README/CHANGELOG/docs index names another rung
+  - implementation path belongs to another rung
+  - user wording conflicts with release-plan.md
