@@ -5,6 +5,19 @@ All notable changes to `agent-pipeline-claude` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — targeting v2.0.0
+
+**Heavier-hand redesign.** v2.0.0 takes the opposite philosophical direction from PR #22 (closed 2026-05-17) which collapsed gates and removed enforcement. v2.0 keeps the gates, adds an eleven-event Cowork lifecycle hook layer, ports directive-contract pre-approval and scope-lock authority from `agent-pipeline-codex` v0.6/v0.5.9, adds the intake skill from codex v0.8, adds persistent file-backed run memory from codex v0.9, and adds an MCP Mem0 layer for cross-session continuity. The codebases are diverging: codex stays lighter, claude takes the heavier hand because Claude historically loses focus mid-run and the runtime needs to catch it.
+
+### In progress (this branch: `v2.0-heavier-hand`)
+
+- Phase 1: foundation policy script ports from codex v0.9.0 — scope-lock authority, DoD readiness, decision ledger, stop validator + final-response gate + pipeline-continue, show-run-status, agent-decision-gate.
+- Phase 2: directive contracts (codex v0.6 + PR #5 amendments — bind-after-conformance, downstream re-verify, exit-3 STOP on resume mismatch).
+- Phase 3: intake skill (codex v0.8 port).
+- Phase 4: lifecycle hooks (11 Cowork events: SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, SubagentStop, Stop, SessionEnd) and persistent file-backed run memory under `.agent-runs/<run-id>/memory/`.
+- Phase 5: Mem0 MCP layer per PRD — OSS-default, Platform behind consent, two-layer architecture (file-backed unconditional + Mem0 best-effort), structured metadata taxonomy enforced by policy.
+- Phase 6: docs, cleanroom verification, audit.
+
 ## [1.3.1] — 2026-05-14
 
 **Remove two false-stops that block hands-off auto-promote.**

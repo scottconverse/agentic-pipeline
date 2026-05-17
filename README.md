@@ -6,7 +6,7 @@ The plugin reads your project's spec, drafts a per-run scope contract from it, a
 
 One namespaced skill. No YAML for you to hand-author.
 
-**Current release: v1.1.0** · [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
+**Current release: v1.3.1** · **In development: v2.0.0 (heavier-hand: hooks + Mem0 + directive contracts)** · [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
 
 ---
 
