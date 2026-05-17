@@ -117,7 +117,7 @@ def test_cleanroom_install_loads_via_plugin_dir(tmp_path: Path) -> None:
     )
     # Look for a loaded/enabled status line near the plugin name
     loaded_marker = re.search(
-        rf"{re.escape(plugin_name)}.*?(Status:\s*[✔✓✅]\s*(loaded|enabled))",
+        rf"{re.escape(plugin_name)}.*?(Status:\s*[✔✓✅√]\s*(loaded|enabled))",
         combined_output,
         re.DOTALL | re.IGNORECASE,
     )

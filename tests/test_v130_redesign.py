@@ -161,17 +161,19 @@ def test_run_skill_does_not_require_grant():
 # Version pin
 # ---------------------------------------------------------------------------
 
-def test_plugin_version_is_1_3_x():
-    """Pins the v1.3 redesign surface, not a literal release. Uses a
-    semver-shape regex so patch releases don't rewrite this test but
-    pre-release tags or malformed strings still fail."""
+def test_plugin_version_is_redesign_or_later():
+    """Pins the v1.3 redesign surface or its v2.0+ successor. v2.0.0 carries
+    forward the modal-gate invariants from v1.3.x (the heavier-hand redesign
+    adds hooks, Mem0, and directive contracts on top, but does not regress
+    chat-APPROVE or grant-based autonomy). Uses a semver-shape regex so
+    patch releases don't rewrite this test but malformed strings still fail."""
     import json
     import re
     plugin = json.loads(_read(REPO_ROOT / ".claude-plugin" / "plugin.json"))
     version = plugin["version"]
-    assert re.fullmatch(r"1\.3\.\d+(?:[-+].+)?", version), (
-        f"plugin.json version is {version!r}; expected 1.3.<patch> "
-        "(optionally with pre-release/build suffix). "
+    assert re.fullmatch(r"(?:1\.3|2\.\d+)\.\d+(?:[-+].+)?", version), (
+        f"plugin.json version is {version!r}; expected 1.3.<patch> or "
+        "2.<minor>.<patch> (optionally with pre-release/build suffix). "
         "If the redesign is being reverted, update this test deliberately."
     )
 
