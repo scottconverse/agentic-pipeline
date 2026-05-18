@@ -227,6 +227,68 @@ def tool_command(event: dict[str, Any]) -> str:
     return ""
 
 
+# Tool names whose semantics are read-only on the local filesystem.
+# These never trigger the "contract artifact touched" warning even if
+# their tool_input mentions a contract filename (audit Pass 10 /
+# Cluster I). Anything not in this set falls through to the existing
+# write-class detection.
+_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
+    "Read",
+    "Grep",
+    "Glob",
+    "WebFetch",
+    "WebSearch",
+    "TodoWrite",  # writes to TodoList, not filesystem
+})
+
+# Bash subcommand tokens that are read-only on the local filesystem.
+# A `bash` event whose first token (post-leading-newlines and after
+# `cd … && `) matches one of these gets the same read-only treatment.
+_READ_ONLY_BASH_TOKENS: frozenset[str] = frozenset({
+    "cat", "head", "tail", "less", "more",
+    "grep", "rg", "egrep", "fgrep",
+    "ls", "dir", "tree",
+    "wc", "find", "stat", "file",
+    "git",  # git status / log / diff — write subcommands (commit, push) are caught by DESTRUCTIVE/EXTERNAL patterns
+    "echo", "printf",
+    # PowerShell readers
+    "Get-Content", "Select-String", "Get-ChildItem", "Get-Item",
+})
+
+
+def _is_read_only_operation(event_or_command: Any) -> bool:
+    """Return True for tool invocations that don't write to the local
+    filesystem (audit Pass 10 / Cluster I).
+
+    Used to suppress the "pipeline contract artifact touched" warning
+    on Read-class tools and `cat manifest.yaml`-style Bash invocations.
+    The pre-Pass-10 check warned on any tool_input containing
+    `manifest.yaml`/`directive.yaml`/`scope-lock.yaml` regardless of
+    intent — operators reading the file (which is the safe, encouraged
+    behavior) saw the same noise as operators writing it.
+    """
+    if not isinstance(event_or_command, dict):
+        return False
+    tool_name = event_or_command.get("tool_name") or ""
+    if isinstance(tool_name, str) and tool_name in _READ_ONLY_TOOL_NAMES:
+        return True
+    # Bash: inspect the first non-cd token.
+    if tool_name == "Bash":
+        cmd = tool_command(event_or_command).strip()
+        if not cmd:
+            return False
+        # Strip leading `cd <dir> && ` chains (multi-step shell).
+        while cmd.startswith("cd ") and "&&" in cmd:
+            cmd = cmd.split("&&", 1)[1].strip()
+        first_token = cmd.split(None, 1)[0] if cmd else ""
+        # Heuristic guard: `git diff > out.txt` etc. is technically
+        # write-class (redirect). Don't classify as read-only.
+        if any(redir in cmd for redir in (">", ">>", "|tee", "| tee")):
+            return False
+        return first_token in _READ_ONLY_BASH_TOKENS
+    return False
+
+
 def classify_tool_risk(event: dict[str, Any], runs: list[ActiveRun]) -> tuple[str, list[str]]:
     command = tool_command(event)
     haystack = command.lower()
@@ -249,7 +311,14 @@ def classify_tool_risk(event: dict[str, Any], runs: list[ActiveRun]) -> tuple[st
     if runs and _touches_outside_allowed_paths(event, runs[0].run_dir):
         severity = "deny"
         reasons.append("write target appears outside manifest allowed_paths during an active run")
-    if "directive.yaml" in haystack or "manifest.yaml" in haystack or "scope-lock.yaml" in haystack:
+    # Audit Pass 10 / Cluster I: only warn on contract-artifact touches
+    # for WRITE-class operations. Reads (cat, grep, Read tool) are the
+    # safe, encouraged behavior and shouldn't get the same warning as
+    # someone editing the manifest mid-run.
+    if (
+        ("directive.yaml" in haystack or "manifest.yaml" in haystack or "scope-lock.yaml" in haystack)
+        and not _is_read_only_operation(event)
+    ):
         if severity != "deny":
             severity = "warn"
         reasons.append("pipeline contract artifact touched")
@@ -285,7 +354,13 @@ def tool_failure_context(event: dict[str, Any]) -> str:
     if failed:
         pieces.append("The last tool result appears to contain a failure. Inspect the command output, fix the root cause, and rerun the relevant verification before advancing the pipeline.")
     command = tool_command(event).lower()
-    if any(name in command for name in ("manifest.yaml", "scope-lock.yaml", "directive.yaml")):
+    # Pass 10 / Cluster I: same read-vs-write distinction as
+    # classify_tool_risk — a successful `cat manifest.yaml` does not
+    # need the "re-run policy checks" prompt; only a write does.
+    if (
+        any(name in command for name in ("manifest.yaml", "scope-lock.yaml", "directive.yaml"))
+        and not _is_read_only_operation(event)
+    ):
         pieces.append("A pipeline contract artifact was touched. Re-run directive/scope/manifest policy checks before relying on any auto-approval.")
     if "pytest" in command and failed:
         pieces.append("Tests failed. Do not mark the stage complete until pytest is green or the failing gate records a valid human stop condition.")

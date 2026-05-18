@@ -663,6 +663,104 @@ def test_record_hook_memory_redacts_message_with_secret(tmp_path: Path, monkeypa
     assert row["metadata"].get("redacted") is True
 
 
+# ---------------------------------------------------------------------------
+# Pass 10 regressions: contract-artifact warning only on writes
+# ---------------------------------------------------------------------------
+#
+# Pre-Pass-10 classify_tool_risk warned "pipeline contract artifact
+# touched" on ANY tool_input string mentioning manifest.yaml /
+# directive.yaml / scope-lock.yaml — including the safe, encouraged
+# `cat manifest.yaml` to inspect state. Reads now pass through
+# without the warning; writes still trip it.
+
+
+def test_classify_tool_risk_does_not_warn_on_read_tool_manifest(tmp_path: Path) -> None:
+    """Read tool on manifest.yaml: no contract-artifact warning."""
+    from hooks.hook_utils import classify_tool_risk
+
+    event = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": ".agent-runs/run-x/manifest.yaml"},
+    }
+    severity, reasons = classify_tool_risk(event, [])
+    assert "pipeline contract artifact touched" not in reasons, (
+        f"Read tool must not trip the contract-artifact warning; got reasons={reasons!r}"
+    )
+
+
+def test_classify_tool_risk_does_not_warn_on_bash_cat_manifest(tmp_path: Path) -> None:
+    """Bash `cat manifest.yaml`: no contract-artifact warning."""
+    from hooks.hook_utils import classify_tool_risk
+
+    event = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "cat .agent-runs/run-x/manifest.yaml"},
+    }
+    severity, reasons = classify_tool_risk(event, [])
+    assert "pipeline contract artifact touched" not in reasons
+
+
+def test_classify_tool_risk_does_not_warn_on_bash_grep_manifest(tmp_path: Path) -> None:
+    """Bash `grep -n goal manifest.yaml`: no contract-artifact warning."""
+    from hooks.hook_utils import classify_tool_risk
+
+    event = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "grep -n goal .agent-runs/run-x/manifest.yaml"},
+    }
+    severity, reasons = classify_tool_risk(event, [])
+    assert "pipeline contract artifact touched" not in reasons
+
+
+def test_classify_tool_risk_warns_on_write_tool_manifest(tmp_path: Path) -> None:
+    """Write tool to manifest.yaml: contract-artifact warning DOES fire.
+    Pinning the positive case so the read suppression doesn't
+    accidentally suppress the legitimate warning too."""
+    from hooks.hook_utils import classify_tool_risk
+
+    event = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": ".agent-runs/run-x/manifest.yaml",
+            "content": "...",
+        },
+    }
+    severity, reasons = classify_tool_risk(event, [])
+    assert "pipeline contract artifact touched" in reasons, (
+        f"Write tool on manifest.yaml must trip the warning; got reasons={reasons!r}"
+    )
+
+
+def test_classify_tool_risk_warns_on_bash_redirect_to_manifest(tmp_path: Path) -> None:
+    """Bash with output redirect IS write-class. `echo … > manifest.yaml`
+    must trip the contract-artifact warning even though the first token
+    (`echo`) is in the read-only token set."""
+    from hooks.hook_utils import classify_tool_risk
+
+    event = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "echo 'overwriting' > .agent-runs/run-x/manifest.yaml"},
+    }
+    severity, reasons = classify_tool_risk(event, [])
+    assert "pipeline contract artifact touched" in reasons
+
+
+def test_tool_failure_context_no_contract_warning_on_read_failure(tmp_path: Path) -> None:
+    """tool_failure_context uses the same read-vs-write distinction —
+    a failed `cat manifest.yaml` (e.g. file missing) should not emit
+    the 'pipeline contract artifact was touched' guidance, which only
+    makes sense after a write."""
+    from hooks.hook_utils import tool_failure_context
+
+    event = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "cat manifest.yaml"},
+        "tool_response": {"exit_code": 1, "stderr": "No such file"},
+    }
+    context = tool_failure_context(event)
+    assert "Re-run directive/scope/manifest policy checks" not in context
+
+
 def test_record_hook_memory_does_not_redact_innocuous_message(tmp_path: Path, monkeypatch) -> None:
     """Sanity check that redaction is targeted, not blanket — ordinary
     messages must pass through unchanged."""

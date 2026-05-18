@@ -7,6 +7,22 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — audit Pass 10 (Cluster I) — contract-artifact warning only on writes
+
+ENG-006 / UX-005: `classify_tool_risk` and `tool_failure_context` emitted "pipeline contract artifact touched" on any tool invocation whose `tool_input` mentioned `manifest.yaml` / `directive.yaml` / `scope-lock.yaml` — including reads (`cat manifest.yaml`, `grep -n goal manifest.yaml`, `Read` tool on the file). Operators got the noisy warning every time they inspected the contract — which is the safe, encouraged behavior. The Phase 6.c fix had only split block-on-failure vs warn-on-success; the false-positive on reads stayed.
+
+- `hooks/hook_utils.py`: new `_is_read_only_operation(event)` helper. Returns `True` for tools in `_READ_ONLY_TOOL_NAMES` (Read, Grep, Glob, WebFetch, WebSearch, TodoWrite) and for `Bash` whose first token (after `cd … && ` stripping) is in `_READ_ONLY_BASH_TOKENS` (cat, head, tail, less, more, grep, rg, ls, dir, find, wc, stat, file, git, echo, printf, Get-Content, Select-String, Get-ChildItem, Get-Item). Output redirect (`>`, `>>`, `| tee`) keeps the command write-class regardless of first-token.
+- `classify_tool_risk` and `tool_failure_context` now AND-gate the contract-artifact warning with `not _is_read_only_operation(event)`.
+- 6 new regression tests in `tests/test_hooks.py`:
+  - `test_classify_tool_risk_does_not_warn_on_read_tool_manifest`
+  - `test_classify_tool_risk_does_not_warn_on_bash_cat_manifest`
+  - `test_classify_tool_risk_does_not_warn_on_bash_grep_manifest`
+  - `test_classify_tool_risk_warns_on_write_tool_manifest` (positive case — read suppression must not mask the legitimate warning)
+  - `test_classify_tool_risk_warns_on_bash_redirect_to_manifest` (`echo … > manifest.yaml` IS write-class)
+  - `test_tool_failure_context_no_contract_warning_on_read_failure`
+
+**UX impact:** the warning fires when it should (mid-run mutation of a contract artifact) and stays quiet when it shouldn't (operator reading the contract to debug). Pre-Pass-10 operators trained themselves to ignore the warning, defeating its purpose.
+
 ### Fixed — audit Pass 9 (Cluster H + ENG-008) — Layer A metadata.type + pre-write secret scrub
 
 Two paired memory-layer fixes:
