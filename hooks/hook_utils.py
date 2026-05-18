@@ -349,6 +349,73 @@ def append_hook_event(repo_root: Path, event_name: str, message: str) -> None:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+# Map hook event names -> default PRD FR-7 taxonomy type. Without this,
+# every Layer A record was written with `metadata = {}` and the Layer
+# A→B flush filter (which requires metadata.type in allowed_types)
+# silently dropped 100% of them as `skipped_no_type` (audit Pass 9 /
+# QA-001). Callers can still override by passing an explicit
+# `metadata={"type": "..."}`.
+#
+# Categories chosen for default-most-useful retrieval semantics:
+#   - PostToolUseFailure → `anti_pattern` so it surfaces under
+#     "what failed last time."
+#   - UserPromptSubmit → `session_state` to preserve dialog continuity
+#     across compactions (PostCompact re-injects handoff_current.md).
+#   - All other lifecycle events → `session_state`.
+# Explicit metadata.type from the caller (open-loops, decisions) wins.
+_EVENT_DEFAULT_TYPE: dict[str, str] = {
+    "SessionStart": "session_state",
+    "UserPromptSubmit": "session_state",
+    "PreToolUse": "session_state",
+    "PermissionRequest": "session_state",
+    "PostToolUse": "session_state",
+    "PostToolUseFailure": "anti_pattern",
+    "PreCompact": "session_state",
+    "PostCompact": "session_state",
+    "SubagentStop": "session_state",
+    "Stop": "session_state",
+    "SessionEnd": "session_state",
+}
+
+
+def _redact_message_for_layer_a(message: str) -> tuple[str, bool, list[str]]:
+    """Pre-write redaction (audit Pass 9 / ENG-008). Returns
+    (sanitized_message, was_redacted, matched_patterns).
+
+    Layer A writes happen unconditionally — they're the durable floor
+    that survives Layer B (Mem0) outages. Before the fix, Bash commands
+    with embedded secrets (e.g. ``curl -H "Authorization: Bearer …"``)
+    were written verbatim to ``.agent-runs/<run-id>/memory/*.jsonl``.
+    Now we run ``scrub()`` against the canonical pattern list; when a
+    secret is detected the record is preserved (timestamp + event +
+    run_id still useful for traceability) but the message body is
+    replaced with a sentinel and the matched-pattern count goes into
+    ``metadata.redacted``.
+
+    The redaction is fail-closed: if ``scrub()`` raises (malformed
+    regex), the message is treated as secret-bearing and redacted.
+    """
+    if not message:
+        return message, False, []
+    try:
+        # Import locally to keep hooks importable when the memory
+        # package isn't on PYTHONPATH (e.g. minimal test contexts).
+        from memory.redaction import scrub
+    except ImportError:
+        return message, False, []
+    try:
+        result = scrub(message)
+    except Exception:  # noqa: BLE001 — fail-closed
+        return "[REDACTED: scrub raised; treating as secret]", True, ["<scrub-error>"]
+    if result.allowed:
+        return message, False, []
+    return (
+        f"[REDACTED: {result.reason}]",
+        True,
+        list(result.matched_patterns) + list(result.matched_paths),
+    )
+
+
 def record_hook_memory(repo_root: Path, event_name: str, message: str, metadata: dict[str, Any] | None = None) -> None:
     runs = discover_active_runs(repo_root)
     if not runs:
@@ -356,13 +423,36 @@ def record_hook_memory(repo_root: Path, event_name: str, message: str, metadata:
     run = runs[0]
     memory_dir = run.run_dir / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
+
+    # Pass 9 / ENG-008: pre-write scrub against the canonical secret
+    # patterns so Bash commands with embedded credentials never reach
+    # disk verbatim. Preserves the event row for traceability but
+    # replaces the message body with a redaction sentinel.
+    sanitized, was_redacted, matched = _redact_message_for_layer_a(message)
+    truncated = _truncate(sanitized, MAX_MEMORY_TEXT)
+
+    # Pass 9 / QA-001: auto-populate metadata.type from the event name
+    # so the Layer A→B flush filter (which requires metadata.type in
+    # allowed_types) actually sees these records as candidates instead
+    # of silently dropping them as skipped_no_type. Caller-supplied
+    # `metadata["type"]` wins so callers like the decision-ledger or
+    # intake skill can override (e.g. "decision", "task_learning").
+    merged_metadata: dict[str, Any] = dict(metadata or {})
+    if not merged_metadata.get("type"):
+        default_type = _EVENT_DEFAULT_TYPE.get(event_name)
+        if default_type:
+            merged_metadata["type"] = default_type
+    if was_redacted:
+        merged_metadata["redacted"] = True
+        merged_metadata["redacted_match_count"] = len(matched)
+
     record = {
         "timestamp": _utc_now(),
         "event": event_name,
         "run_id": run.run_id,
         "stage": run.fields.get("current_stage", ""),
-        "message": _truncate(message, MAX_MEMORY_TEXT),
-        "metadata": metadata or {},
+        "message": truncated,
+        "metadata": merged_metadata,
     }
     target_file = memory_dir / _memory_file_for_event(event_name)
     append_jsonl(target_file, record)

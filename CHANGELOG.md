@@ -7,6 +7,27 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — audit Pass 9 (Cluster H + ENG-008) — Layer A metadata.type + pre-write secret scrub
+
+Two paired memory-layer fixes:
+
+**QA-001 (Cluster H):** `hooks.hook_utils.record_hook_memory` wrote every record with `metadata = {}`. The Layer A→B flush filter (`memory.sync.flush_layer_a_to_mem0`) requires `metadata.type` ∈ `allowed_types` to forward a record. Result: every Layer A row was silently dropped by the flush as `skipped_no_type`. Layer B was permanently starved of data. The "cross-session memory" promise was unkept.
+
+- `hooks/hook_utils.py`: added `_EVENT_DEFAULT_TYPE` mapping each of the 11 hook events to a FR-7 taxonomy type. `record_hook_memory` now sets `metadata["type"]` from the mapping when the caller didn't pass one explicitly. PostToolUseFailure defaults to `"anti_pattern"`; all other events default to `"session_state"`. Explicit caller-supplied `metadata["type"]` still wins (decision-ledger, intake, etc.).
+
+**ENG-008:** Layer A is the durable filesystem floor — records go to `.agent-runs/<run-id>/memory/*.jsonl` regardless of Mem0 state. Verbatim Bash commands with embedded credentials (e.g., `curl -H 'Authorization: Bearer …'`) were written to disk without scrubbing. The Layer B path runs through `scrub()` (PolicyLayer.add); Layer A did not. Secrets leaked into the durable artifact.
+
+- `hooks/hook_utils.py`: new helper `_redact_message_for_layer_a()` runs the canonical `memory.redaction.scrub()` against every message before write. On match, the record is preserved (timestamp + event + run_id stay traceable) but the message body is replaced with `[REDACTED: <reason>]` and `metadata.redacted = True` plus `metadata.redacted_match_count`. Fail-closed: if `scrub()` raises (malformed regex, missing import), the message is treated as secret-bearing.
+
+5 new regression tests in `tests/test_hooks.py`:
+- `test_record_hook_memory_auto_populates_metadata_type`
+- `test_record_hook_memory_post_tool_use_failure_is_anti_pattern`
+- `test_record_hook_memory_explicit_type_overrides_default` (callers still win)
+- `test_record_hook_memory_redacts_message_with_secret`
+- `test_record_hook_memory_does_not_redact_innocuous_message`
+
+**Security/UX impact:** Layer B finally sees Layer A records. Bash commands with credentials no longer land verbatim in the durable memory trail. Both fixes live in the same producer (`record_hook_memory`), so they ship as a paired fix; reverting one without the other is dangerous (Layer B starts seeing unredacted records, or sees redacted records without the type-tagging).
+
 ### Fixed — audit Pass 8a (Pass 2 mirror drift) — pipeline-payload scripts pick up centralized `find_repo_root`
 
 Mid-sprint audit-lite caught a same-class regression: Pass 2 centralized `find_repo_root` in 11 top-level scripts but the pipeline-payload mirror still shipped 10 local `_find_repo_root` helpers that ignored `CLAUDE_PROJECT_DIR`. Since pipeline-init copies the mirror into operator projects as `scripts/policy/`, operators who scaffold a project today would inherit the *pre-Pass-2* bug — the exact "incomplete same-class fix" failure mode the audit had warned about.

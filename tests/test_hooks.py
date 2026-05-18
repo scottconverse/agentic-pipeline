@@ -572,6 +572,115 @@ def test_extract_mcp_local_write_paths_known_create_file(tmp_path: Path) -> None
     assert paths == ["src/new_file.py"]
 
 
+# ---------------------------------------------------------------------------
+# Pass 9 regressions: Layer A metadata.type auto-populate + ENG-008 scrub
+# ---------------------------------------------------------------------------
+
+
+def test_record_hook_memory_auto_populates_metadata_type(tmp_path: Path, monkeypatch) -> None:
+    """QA-001: record_hook_memory must set metadata.type from
+    _EVENT_DEFAULT_TYPE so the Layer A→B flush filter sees the record
+    as a candidate. Pre-Pass-9 every record got metadata={} and the
+    flush filter silently dropped 100% as skipped_no_type."""
+    from hooks.hook_utils import record_hook_memory
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _write_active_run(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    record_hook_memory(tmp_path, "UserPromptSubmit", "hello from operator")
+
+    events = (run / "memory" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    assert events, "no event row written"
+    row = json.loads(events[-1])
+    assert row["metadata"]["type"] == "session_state", (
+        f"UserPromptSubmit should default to session_state per FR-7; got {row['metadata']!r}"
+    )
+
+
+def test_record_hook_memory_post_tool_use_failure_is_anti_pattern(tmp_path: Path, monkeypatch) -> None:
+    """PostToolUseFailure should default to `anti_pattern` so retrieval
+    surfaces past failures under "what failed last time"."""
+    from hooks.hook_utils import record_hook_memory
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _write_active_run(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    record_hook_memory(tmp_path, "PostToolUseFailure", "tool X exit=1")
+
+    events = (run / "memory" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    row = json.loads(events[-1])
+    assert row["metadata"]["type"] == "anti_pattern"
+
+
+def test_record_hook_memory_explicit_type_overrides_default(tmp_path: Path, monkeypatch) -> None:
+    """Callers (decision-ledger, intake) can pass metadata.type explicitly;
+    the default-by-event lookup must not clobber it."""
+    from hooks.hook_utils import record_hook_memory
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _write_active_run(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    record_hook_memory(
+        tmp_path,
+        "UserPromptSubmit",
+        "operator promotes the decision",
+        metadata={"type": "decision"},
+    )
+
+    events = (run / "memory" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    row = json.loads(events[-1])
+    assert row["metadata"]["type"] == "decision", (
+        "explicit metadata.type from caller must win over event default"
+    )
+
+
+def test_record_hook_memory_redacts_message_with_secret(tmp_path: Path, monkeypatch) -> None:
+    """ENG-008: messages containing recognized secret patterns must be
+    redacted before write — Layer A is the durable floor that lives on
+    disk, and verbatim Bash commands with embedded API keys would leak
+    into .agent-runs/<run-id>/memory/*.jsonl."""
+    from hooks.hook_utils import record_hook_memory
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _write_active_run(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    secret_message = (
+        "curl -H 'Authorization: Bearer abcdefghijklmnop1234567890XYZ' "
+        "https://api.example.com/"
+    )
+    record_hook_memory(tmp_path, "PreToolUse", secret_message)
+
+    events = (run / "memory" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    row = json.loads(events[-1])
+    assert "abcdefghijklmnop" not in row["message"], (
+        f"secret token leaked into Layer A row: {row['message']!r}"
+    )
+    assert row["message"].startswith("[REDACTED")
+    assert row["metadata"].get("redacted") is True
+
+
+def test_record_hook_memory_does_not_redact_innocuous_message(tmp_path: Path, monkeypatch) -> None:
+    """Sanity check that redaction is targeted, not blanket — ordinary
+    messages must pass through unchanged."""
+    from hooks.hook_utils import record_hook_memory
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _write_active_run(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    msg = "User clicked Continue at the plan gate."
+    record_hook_memory(tmp_path, "UserPromptSubmit", msg)
+
+    events = (run / "memory" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    row = json.loads(events[-1])
+    assert row["message"] == msg
+    assert row["metadata"].get("redacted", False) is False
+
+
 def test_manifest_list_does_not_spill_into_sibling_yaml_keys(tmp_path: Path) -> None:
     """Phase 6.c bug fix: _manifest_list previously kept collecting `- ...`
     items until an unindented line, which made allowed_paths absorb sibling
