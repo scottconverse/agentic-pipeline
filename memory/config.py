@@ -89,7 +89,10 @@ class PlatformConfig:
 
 @dataclass(frozen=True)
 class OssConfig:
-    base_url: str = "http://localhost:3000"
+    # 8888 is the vendor docker-compose external port that maps to the
+    # FastAPI server's internal 8000. The Next.js dashboard runs on 3000.
+    # The mem0ai SDK's Memory(base_url=...) wants the API, NOT the dashboard.
+    base_url: str = "http://localhost:8888"
     compose_dir: str = "./vendor/mem0/server"
     admin_api_key_env: str = "MEM0_ADMIN_API_KEY"
 
@@ -156,7 +159,7 @@ def load_config(project_root: Path | None = None) -> Mem0Config:
             return Mem0Config(enabled=True, mode="platform")
         if env_mode == "oss" and _env("MEM0_BASE_URL"):
             return Mem0Config(enabled=True, mode="oss",
-                              oss=OssConfig(base_url=_env("MEM0_BASE_URL", "http://localhost:3000")))
+                              oss=OssConfig(base_url=_env("MEM0_BASE_URL", "http://localhost:8888")))
         return Mem0Config(enabled=False, mode=env_mode or "oss")
 
     try:
@@ -217,7 +220,7 @@ def load_config(project_root: Path | None = None) -> Mem0Config:
         mcp_endpoint=str(platform_raw.get("mcp_endpoint", "https://mcp.mem0.ai/mcp/")),
     )
     oss = OssConfig(
-        base_url=str(oss_raw.get("base_url", "http://localhost:3000")),
+        base_url=str(oss_raw.get("base_url", "http://localhost:8888")),
         compose_dir=str(oss_raw.get("compose_dir", "./vendor/mem0/server")),
         admin_api_key_env=str(oss_raw.get("admin_api_key_env", "MEM0_ADMIN_API_KEY")),
     )

@@ -208,7 +208,7 @@ class OssAdapter(MemoryAdapter):
     Lazy-imports the SDK like PlatformAdapter.
     """
 
-    def __init__(self, base_url: str = "http://localhost:3000"):
+    def __init__(self, base_url: str = "http://localhost:8888"):
         self._base_url = base_url
         self._memory = None
 

@@ -7,6 +7,15 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — audit Pass 1 (Cluster A) — Mem0 OSS default port
+
+- `memory/config.py` (OssConfig dataclass default, env-fallback path, dict-parse path), `memory/adapter.py` (OssAdapter constructor default), `pipelines/mem0-config-template.json`, `skills/pipeline-init/references/pipeline-payload/pipelines/mem0-config-template.json`, `schemas/mem0.config.v1.json`, `tests/test_memory_layer.py`: changed default `oss.base_url` from `http://localhost:3000` (the dashboard) to `http://localhost:8888` (the FastAPI server per the vendor `docker-compose.yaml`). The mem0 SDK's `Memory(base_url=...)` expects the API; pointing it at the dashboard silently returns 404 HTML and the circuit breaker masks it.
+- `scripts/mem0_bootstrap.py cmd_test`: `policy.list_entities()` swallows backend exceptions and returns `{"error": "..."}`; cmd_test now treats that shape as rc=2 (was: rc=0 because no exception fired). Operators get a useful error when the URL is wrong.
+- `USER-MANUAL.md` and `skills/mem0/SKILL.md`: added a port table documenting which host port is the API vs the dashboard, and a migration note for operators who scaffolded `.mem0/config.json` before this fix.
+- Regression: `tests/test_memory_layer.py::test_oss_config_default_port_is_api` pins `OssConfig().base_url == "http://localhost:8888"` and the canonical template's `oss.base_url`. Any future change to either default will fail the test.
+
+**Operator action on upgrade:** if you already ran `mem0 init` against the pre-fix template, your `.mem0/config.json` still has the wrong port. Re-run `python scripts/mem0_bootstrap.py init --mode oss --force` or hand-edit `oss.base_url` to `http://localhost:8888`.
+
 ## [2.0.0] — 2026-05-17
 
 **Heavier-hand redesign.** Takes the opposite direction from PR #22 (closed 2026-05-17) which collapsed gates and removed enforcement. v2.0 keeps the gates and adds enforcement everywhere — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval, scope-lock authority, intake skill, persistent file-backed run memory, and an MCP Mem0 layer for cross-session continuity. Codex stays lighter; claude takes the heavier hand because Claude historically loses focus mid-run and the runtime needs to catch it.

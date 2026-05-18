@@ -503,7 +503,7 @@ def test_mem0_init_finds_template_in_dot_pipelines(tmp_path, monkeypatch, capsys
         "mode": "oss",
         "project": "smoke",
         "platform": {"api_key_env": "MEM0_API_KEY", "endpoint": "https://api.mem0.ai", "mcp_endpoint": "x"},
-        "oss": {"base_url": "http://localhost:3000", "compose_dir": "./vendor/mem0/server", "admin_api_key_env": "MEM0_ADMIN_API_KEY"},
+        "oss": {"base_url": "http://localhost:8888", "compose_dir": "./vendor/mem0/server", "admin_api_key_env": "MEM0_ADMIN_API_KEY"},
         "identity": {"user_id_strategy": "hash_git_email", "agent_id": "claude-code", "app_id_strategy": "slug_git_remote", "run_id_strategy": "branch_sha_epoch"},
         "retrieval": {"top_k": 10, "token_budget": 1200, "session_start_overflow": 1.5, "enable_prompt_injection": True, "min_prompt_chars": 20, "latency_budget_ms": {"p50": 150, "p95": 400, "session_start": 1500}},
         "writes": {"allowed_types": ["decision"], "agent_can_delete": False, "agent_can_update": True},
@@ -574,3 +574,143 @@ def test_prune_execute_without_yes_refuses(tmp_path, monkeypatch) -> None:
     rc = mem0_bootstrap.cmd_prune(args)
 
     assert rc == 2
+
+
+# ---------------------------------------------------------------------------
+# Pass 1 (audit Cluster A) regressions: Mem0 OSS default port
+# ---------------------------------------------------------------------------
+#
+# The mem0ai/mem0 vendor docker-compose exposes :8888 for the FastAPI
+# server and :3000 for the Next.js dashboard. The Python SDK's
+# Memory(base_url=...) must point at the API, never the dashboard.
+# Pre-2026-05-18 the default was :3000 — Layer B silently never lit up.
+# These tests prevent that regression by pinning the canonical defaults
+# in every site the value lives in.
+
+
+def test_oss_config_default_port_is_api() -> None:
+    """OssConfig dataclass default must point at the FastAPI server (8888),
+    not the Next.js dashboard (3000)."""
+    from memory.config import OssConfig
+
+    assert OssConfig().base_url == "http://localhost:8888", (
+        "OssConfig.base_url default must be the API endpoint (:8888), not "
+        "the dashboard (:3000). The mem0 SDK calls base_url directly; the "
+        "dashboard returns 404 HTML on SDK requests and the circuit "
+        "breaker masks the URL bug as a generic backend failure."
+    )
+
+
+def test_pipelines_template_default_port_is_api() -> None:
+    """pipelines/mem0-config-template.json's oss.base_url must match the
+    dataclass default. Drift here means `mem0 init` writes the wrong
+    URL into operator projects."""
+    import json
+    template_path = Path(__file__).resolve().parents[1] / "pipelines" / "mem0-config-template.json"
+    template = json.loads(template_path.read_text(encoding="utf-8"))
+    assert template["oss"]["base_url"] == "http://localhost:8888"
+
+
+def test_scaffold_payload_template_default_port_is_api() -> None:
+    """The scaffold mirror under skills/pipeline-init/references/pipeline-payload/
+    must match the canonical template. The pipeline-init skill copies this
+    mirror into the operator's project; drift here means brand-new
+    projects start with the wrong URL."""
+    import json
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "skills" / "pipeline-init" / "references" / "pipeline-payload"
+        / "pipelines" / "mem0-config-template.json"
+    )
+    template = json.loads(template_path.read_text(encoding="utf-8"))
+    assert template["oss"]["base_url"] == "http://localhost:8888"
+
+
+def test_schema_default_port_is_api() -> None:
+    """schemas/mem0.config.v1.json oss.base_url default must agree with
+    the dataclass + template. The schema doesn't enforce defaults at
+    runtime, but it's the source of truth for documentation generators."""
+    import json
+    schema_path = Path(__file__).resolve().parents[1] / "schemas" / "mem0.config.v1.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert schema["properties"]["oss"]["properties"]["base_url"]["default"] == "http://localhost:8888"
+
+
+def test_oss_adapter_default_base_url_is_api() -> None:
+    """OssAdapter.__init__ default base_url must match the dataclass.
+    A drift between the dataclass and the adapter would let callers
+    that instantiate the adapter directly (bypassing Mem0Config) get
+    the wrong port."""
+    from memory.adapter import OssAdapter
+
+    assert OssAdapter().__dict__["_base_url"] == "http://localhost:8888"
+
+
+def test_cmd_test_returns_2_on_backend_error(tmp_path, monkeypatch, capsys) -> None:
+    """policy.list_entities() swallows backend exceptions and returns
+    {"error": "..."}. cmd_test must detect that shape and return rc=2.
+    Before this fix, cmd_test only checked for raised exceptions, which
+    never fire — so a wrong-port `mem0 test` falsely reported success."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    # Write a minimal .mem0/config.json so load_config returns enabled=True.
+    (tmp_path / ".mem0").mkdir()
+    import json
+    (tmp_path / ".mem0" / "config.json").write_text(
+        json.dumps({"mode": "oss", "oss": {"base_url": "http://localhost:8888"}}),
+        encoding="utf-8",
+    )
+
+    import mem0_bootstrap
+
+    class _ErrorPolicy:
+        def list_entities(self):
+            return {"error": "connection refused"}
+
+    # Patch build_policy to return our stub. build_adapter is called too;
+    # let it run — it returns OssAdapter without contacting the network
+    # because of the lazy-import pattern.
+    monkeypatch.setattr(mem0_bootstrap, "build_policy", lambda *a, **kw: _ErrorPolicy())
+
+    import argparse
+    args = argparse.Namespace()
+    rc = mem0_bootstrap.cmd_test(args)
+
+    captured = capsys.readouterr()
+    assert rc == 2, f"expected rc=2 on entities.error, got {rc}; stderr={captured.err!r}"
+    assert "connection refused" in captured.err
+
+
+def test_cmd_test_oss_hint_mentions_8888_when_misconfigured(tmp_path, monkeypatch, capsys) -> None:
+    """When OSS mode is configured and the backend errors, the hint must
+    cite the canonical :8888 port so operators can self-diagnose a
+    misconfigured base_url."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    (tmp_path / ".mem0").mkdir()
+    import json
+    (tmp_path / ".mem0" / "config.json").write_text(
+        json.dumps({"mode": "oss", "oss": {"base_url": "http://localhost:3000"}}),
+        encoding="utf-8",
+    )
+
+    import mem0_bootstrap
+
+    class _ErrorPolicy:
+        def list_entities(self):
+            return {"error": "HTTP 404"}
+
+    monkeypatch.setattr(mem0_bootstrap, "build_policy", lambda *a, **kw: _ErrorPolicy())
+
+    import argparse
+    args = argparse.Namespace()
+    rc = mem0_bootstrap.cmd_test(args)
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "8888" in captured.err
+    assert "3000" in captured.err

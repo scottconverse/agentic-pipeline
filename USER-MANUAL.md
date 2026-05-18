@@ -62,6 +62,19 @@ Subcommands: `init` (write `.mem0/config.json` + consent stub), `up` / `down` (O
 
 OSS-default per PRD FR-1. Platform mode requires explicit `consent.json` grant (FR-14). Layer A still works without Mem0 enabled.
 
+#### OSS stack ports
+
+The vendor `mem0ai/mem0` docker compose exposes the following ports on the host. The plugin's default `oss.base_url` points at the **API** port — the SDK must NOT be pointed at the dashboard:
+
+| Service | Host port | Inside container | Used by |
+|---|---|---|---|
+| `mem0` (FastAPI server) | **8888** | 8000 | `oss.base_url` — what the `mem0ai` Python SDK calls |
+| `mem0-dashboard` (Next.js UI) | **3000** | 3000 | Browser UI only; NOT a programmatic endpoint |
+| `postgres` | 8432 | 5432 | Internal compose-network only |
+| `qdrant` | (none exposed by default) | 6333 | Internal compose-network only |
+
+If you upgraded from a `.mem0/config.json` that was scaffolded before 2026-05-18, your `oss.base_url` may still be `http://localhost:3000` (the dashboard). Run `python scripts/mem0_bootstrap.py init --mode oss --force` to re-scaffold, or hand-edit to `http://localhost:8888`.
+
 ### Scope-lock authority
 
 `scripts/check_scope_lock.py` + `check_rung_file_ownership.py` + `check_release_docs_consistency.py` block work that drifts off the canonical release-plan rung. Required runs check edited paths, commit messages, and doc claims for forbidden future-rung terms.

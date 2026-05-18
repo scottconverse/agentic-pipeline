@@ -18,7 +18,7 @@
     "oss": {
       "type": "object",
       "properties": {
-        "base_url": {"type": "string", "default": "http://localhost:3000"},
+        "base_url": {"type": "string", "default": "http://localhost:8888"},
         "compose_dir": {"type": "string", "default": "./vendor/mem0/server"},
         "admin_api_key_env": {"type": "string", "default": "MEM0_ADMIN_API_KEY"}
       }

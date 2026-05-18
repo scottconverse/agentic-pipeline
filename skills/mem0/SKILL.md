@@ -40,6 +40,20 @@ Report the CLI's output to the operator verbatim. Do not modify
 `.mem0/config.json` directly — always go through `mem0 init` so the
 template stays canonical.
 
+## OSS ports (operator quick reference)
+
+`vendor/mem0/server/docker-compose.yaml` exposes:
+
+- `:8888` — FastAPI server (this is `oss.base_url` — the SDK endpoint)
+- `:3000` — Next.js dashboard (browser only; NOT the SDK target)
+- `:8432` — Postgres (compose-internal)
+
+If `mem0 test` reports a backend error and the URL looks correct, confirm
+the docker stack is `up` and that no other process is bound to 8888.
+A `.mem0/config.json` that points at `:3000` will silently fail (the
+dashboard returns HTML, the SDK expects JSON, the circuit breaker masks
+it as "backend unreachable").
+
 ## Hard rules
 
 - This skill is operator-facing. The agent never invokes `prune --execute`

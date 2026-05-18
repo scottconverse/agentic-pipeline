@@ -223,7 +223,14 @@ def cmd_whoami(args: argparse.Namespace) -> int:
 
 
 def cmd_test(args: argparse.Namespace) -> int:
-    """`pipeline mem0 test` - smoke check: config + identity + adapter list_entities."""
+    """`pipeline mem0 test` - smoke check: config + identity + adapter list_entities.
+
+    `policy.list_entities()` swallows backend exceptions and returns
+    ``{"error": "..."}`` (so the agent-facing path is fail-soft). The
+    smoke test must therefore inspect the returned shape — a try/except
+    around the call never fires when the backend is unreachable, which
+    used to make `mem0 test` falsely report success against a wrong URL.
+    """
     root = _project_root()
     config = load_config(root)
     if not config.enabled:
@@ -236,6 +243,20 @@ def cmd_test(args: argparse.Namespace) -> int:
         entities = policy.list_entities()
     except Exception as exc:  # noqa: BLE001
         print(f"mem0_bootstrap: test - FAIL - list_entities raised: {exc}", file=sys.stderr)
+        return 2
+    if isinstance(entities, dict) and "error" in entities:
+        hint = ""
+        if config.mode == "oss":
+            hint = (
+                f" — base_url is {config.oss.base_url!r}; the vendor compose "
+                "exposes the FastAPI server on :8888 and the dashboard on :3000. "
+                "If the URL ends in :3000, edit .mem0/config.json oss.base_url "
+                "to http://localhost:8888 (or rerun `mem0 init --mode oss --force`)."
+            )
+        print(
+            f"mem0_bootstrap: test - FAIL - backend reported error: {entities['error']}{hint}",
+            file=sys.stderr,
+        )
         return 2
     summary = {
         "mode": config.mode,
