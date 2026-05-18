@@ -452,6 +452,126 @@ def test_pre_tool_use_denies_multiedit_with_out_of_scope_file_path(tmp_path: Pat
     assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+def test_pre_tool_use_denies_mcp_create_file_with_out_of_scope_path(tmp_path: Path, capsys, monkeypatch) -> None:
+    """Pass 7 (audit Cluster G): MCP local-write tools are gated through
+    an explicit allowlist (MCP_LOCAL_WRITE_TOOL_RULES). `mcp__*__create_file`
+    must be denied when its `path` field falls outside manifest.allowed_paths."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _write_active_run(tmp_path)
+    (run / "manifest.yaml").write_text(
+        "allowed_paths:\n  - src/\nforbidden_paths: []\n",
+        encoding="utf-8",
+    )
+
+    event = {
+        "cwd": str(tmp_path),
+        "tool_name": "mcp__47192d5e-4338-42ef-bd32-d30f39933236__create_file",
+        "tool_input": {
+            "path": "docs/should-not-write.md",
+            "content": "...",
+        },
+    }
+    assert hook_runner.handle_pre_tool_use(event) == 0
+    payload = _json_out(capsys)
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_pre_tool_use_denies_mcp_copy_file_with_out_of_scope_destination(tmp_path: Path, capsys, monkeypatch) -> None:
+    """`mcp__*__copy_file` carries the target path in `destination` (or
+    `destination_path` / `to`). The allowlist extracts all three; a
+    destination outside scope must be denied."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _write_active_run(tmp_path)
+    (run / "manifest.yaml").write_text(
+        "allowed_paths:\n  - src/\nforbidden_paths: []\n",
+        encoding="utf-8",
+    )
+
+    event = {
+        "cwd": str(tmp_path),
+        "tool_name": "mcp__filesystem__copy_file",
+        "tool_input": {
+            "source": "src/foo.py",
+            "destination": "vendor/exfiltrated.py",
+        },
+    }
+    assert hook_runner.handle_pre_tool_use(event) == 0
+    payload = _json_out(capsys)
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_pre_tool_use_does_not_gate_mcp_github_push_files(tmp_path: Path, capsys, monkeypatch) -> None:
+    """mcp__github__push_files pushes to GitHub via API; it does NOT touch
+    the local working tree. The allowlist intentionally OMITS it — remote
+    pushes are gated by EXTERNAL_OR_RELEASE_PATTERNS, not scope-lock
+    allowed_paths. The hook can still flag it for other reasons (warn
+    on external/release), but the scope-out-of-paths reasoning must not
+    fire for a remote-only tool."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _write_active_run(tmp_path)
+    (run / "manifest.yaml").write_text(
+        "allowed_paths:\n  - src/\nforbidden_paths: []\n",
+        encoding="utf-8",
+    )
+
+    event = {
+        "cwd": str(tmp_path),
+        "tool_name": "mcp__github__push_files",
+        "tool_input": {
+            "owner": "example",
+            "repo": "example",
+            "branch": "main",
+            "files": [{"path": "docs/should-not-trigger-scope.md", "content": "..."}],
+        },
+    }
+    rc = hook_runner.handle_pre_tool_use(event)
+    # The hook returns 0 (no decision to emit) when the tool isn't
+    # gated. capsys may be empty in that case — the absence of a deny
+    # decision IS the assertion. If a payload exists, it must not cite
+    # the scope-lock allowed_paths reason.
+    out = capsys.readouterr().out.strip()
+    if out:
+        payload = json.loads(out)
+        decision = payload.get("hookSpecificOutput", {}).get("permissionDecision", "allow")
+        reasons = " ".join(
+            payload.get("hookSpecificOutput", {}).get("permissionDecisionReason", []) or []
+        )
+        assert decision != "deny" or "outside allowed_paths" not in reasons.lower(), (
+            f"mcp__github__push_files must NOT trip the local scope-lock guard "
+            f"(remote push, not local write). decision={decision!r}, reasons={reasons!r}"
+        )
+    assert rc == 0
+
+
+def test_extract_mcp_local_write_paths_unknown_mcp_returns_empty(tmp_path: Path) -> None:
+    """Unknown MCP tools (not in the explicit allowlist) return [] from
+    `_extract_mcp_local_write_paths`. This is the audit-locked posture:
+    no generic recursive path extraction — operators must extend
+    `MCP_LOCAL_WRITE_TOOL_RULES` to gate new MCP write surfaces."""
+    from hooks.hook_utils import _extract_mcp_local_write_paths
+
+    paths = _extract_mcp_local_write_paths(
+        "mcp__some__random_tool",
+        {"path": "tempting.txt", "destination": "also-tempting.txt"},
+    )
+    assert paths == [], (
+        f"unknown MCP tool must not extract paths via generic field "
+        f"matching; got {paths}"
+    )
+
+
+def test_extract_mcp_local_write_paths_known_create_file(tmp_path: Path) -> None:
+    """Sanity check that the allowlist actually fires for known-good
+    MCP local-write tools."""
+    from hooks.hook_utils import _extract_mcp_local_write_paths
+
+    paths = _extract_mcp_local_write_paths(
+        "mcp__filesystem__create_file",
+        {"path": "src/new_file.py", "content": "..."},
+    )
+    assert paths == ["src/new_file.py"]
+
+
 def test_manifest_list_does_not_spill_into_sibling_yaml_keys(tmp_path: Path) -> None:
     """Phase 6.c bug fix: _manifest_list previously kept collecting `- ...`
     items until an unindented line, which made allowed_paths absorb sibling

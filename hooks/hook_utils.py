@@ -509,12 +509,71 @@ def _touches_outside_allowed_paths(event_or_command, run_dir: Path) -> bool:
     return False
 
 
+# Explicit allowlist of MCP write tools and the tool_input fields where
+# they carry their target file path. Generic recursive path extraction
+# was rejected during audit synthesis (Pass 7 / Cluster G) because it
+# false-positives on every MCP that happens to have a string field
+# named "path" or "destination" — including remote APIs (mcp__github__*,
+# mcp__slack__*, ...) that never touch the local filesystem. The
+# audit-locked decision: explicit allowlist of LOCAL-filesystem write
+# tools only.
+#
+# Each entry maps a compiled regex matching the tool_name to a tuple of
+# tool_input field names that hold local file paths. Add new entries
+# here as new local-filesystem MCPs are adopted by operators.
+#
+# Intentionally NOT in the allowlist:
+#   * `mcp__github__create_or_update_file`, `mcp__github__push_files` —
+#     push to GitHub via API, do NOT modify the local working tree.
+#     Remote pushes are gated by EXTERNAL_OR_RELEASE_PATTERNS, not by
+#     scope-lock allowed_paths.
+#   * `mcp__*__send_message`, `mcp__*__post_*` — outbound network calls,
+#     no local write surface.
+MCP_LOCAL_WRITE_TOOL_RULES: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = (
+    (re.compile(r"^mcp__.+__create_file$"), ("path", "file_path")),
+    (re.compile(r"^mcp__.+__copy_file$"), ("destination", "destination_path", "to", "target")),
+    (re.compile(r"^mcp__.+__write_file$"), ("path", "file_path")),
+    (re.compile(r"^mcp__.+__upload_file$"), ("path", "file_path", "destination")),
+    (re.compile(r"^mcp__.+__save_profile$"), ("path", "profile_path")),
+    # PDF tools: fill_pdf, merge_pdfs, reorder_pdf_pages, etc. produce
+    # output files locally per tool_input.output (or output_path).
+    (re.compile(r"^mcp__.+__fill_pdf$"), ("output", "output_path")),
+    (re.compile(r"^mcp__.+__merge_pdfs$"), ("output", "output_path")),
+    (re.compile(r"^mcp__.+__split_pdf$"), ("output", "output_path", "output_dir")),
+    (re.compile(r"^mcp__.+__bulk_fill_from_csv$"), ("output", "output_path", "output_dir")),
+)
+
+
+def _extract_mcp_local_write_paths(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+    """Apply the explicit MCP-local-write allowlist to a tool_input dict.
+
+    Returns every field-value from the allowlist's per-tool field list
+    that looks like a non-empty string path. Unknown MCP tools return
+    [] — those go through the rest of `_extract_write_paths`'s
+    extraction path (which finds nothing for MCPs that aren't in the
+    allowlist, by design).
+    """
+    if not tool_name or not isinstance(tool_input, dict):
+        return []
+    for pattern, fields in MCP_LOCAL_WRITE_TOOL_RULES:
+        if pattern.match(tool_name):
+            paths: list[str] = []
+            for field_name in fields:
+                value = tool_input.get(field_name)
+                if isinstance(value, str) and value:
+                    paths.append(value)
+            return paths
+    return []
+
+
 def _extract_write_paths(event_or_command) -> list[str]:
     """Return every file path a tool call would write to.
 
     For Cowork event dicts: pulls `tool_input.file_path` (Write / Edit /
     NotebookEdit), `tool_input.edits[].file_path` (MultiEdit), and falls
-    back to shell-command parsing for Bash. For bare strings: only the
+    back to shell-command parsing for Bash. Also consults the explicit
+    MCP allowlist at ``MCP_LOCAL_WRITE_TOOL_RULES`` for local-filesystem
+    write MCPs (Pass 7 / Cluster G). For bare strings: only the
     shell-command path.
     """
     paths: list[str] = []
@@ -536,6 +595,10 @@ def _extract_write_paths(event_or_command) -> list[str]:
             nb_path = tool_input.get("notebook_path")
             if isinstance(nb_path, str) and nb_path:
                 paths.append(nb_path)
+            # Allowlisted MCP local-write tools (Pass 7 / Cluster G).
+            tool_name = event_or_command.get("tool_name") or ""
+            if isinstance(tool_name, str):
+                paths.extend(_extract_mcp_local_write_paths(tool_name, tool_input))
         # Always also try the shell command if present
         command_text = tool_command(event_or_command)
     else:

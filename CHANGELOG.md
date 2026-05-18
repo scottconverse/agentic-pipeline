@@ -7,6 +7,18 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — audit Pass 7 (Cluster G) — MCP local-write tool allowlist
+
+Phase 6.c added `_extract_write_paths()` to make the scope guard pick up `tool_input.file_path` / `edits[].file_path` / `notebook_path` for the core Claude tools (Write, Edit, MultiEdit, NotebookEdit). MCP write tools — `mcp__*__create_file`, `mcp__*__copy_file`, etc. — were not covered. A subprocess that invoked an MCP file-creation tool could write outside `manifest.allowed_paths` without tripping the scope-lock guard.
+
+The audit synthesis (Cluster G) rejected generic recursive path extraction because it would false-positive on every MCP that happens to have a string field named `path` or `destination` — including remote APIs (mcp__github__*, mcp__slack__*) that never touch the local filesystem. Audit-locked decision: explicit allowlist of local-filesystem write tools.
+
+- `hooks/hook_utils.py`: added `MCP_LOCAL_WRITE_TOOL_RULES` — a tuple of `(regex, field-names)` pairs for the known local-filesystem MCP write tools (`create_file`, `copy_file`, `write_file`, `upload_file`, `save_profile`, PDF output tools). New helper `_extract_mcp_local_write_paths(tool_name, tool_input)` consults the allowlist; `_extract_write_paths()` calls it when iterating an event dict.
+- Intentionally NOT in the allowlist: `mcp__github__create_or_update_file`, `mcp__github__push_files` (remote API pushes, not local writes — already gated by EXTERNAL_OR_RELEASE_PATTERNS), `mcp__*__send_message`, `mcp__*__post_*` (outbound network, no local write surface).
+- 5 new regression tests in `tests/test_hooks.py`: `test_pre_tool_use_denies_mcp_create_file_with_out_of_scope_path`, `test_pre_tool_use_denies_mcp_copy_file_with_out_of_scope_destination`, `test_pre_tool_use_does_not_gate_mcp_github_push_files` (remote tool not gated by allowed_paths), `test_extract_mcp_local_write_paths_unknown_mcp_returns_empty` (locks the explicit-allowlist posture), `test_extract_mcp_local_write_paths_known_create_file`.
+
+**Operator impact:** scope-lock now catches MCP-driven writes too. To gate a new local-filesystem MCP write surface, add a pattern to `MCP_LOCAL_WRITE_TOOL_RULES`. Generic field-name fishing is intentionally not supported.
+
 ### Fixed — audit Pass 6 (Cluster F) — `secret_patterns` defaults match canonical
 
 The `memory/redaction.py` module exports `_DEFAULT_SECRET_PATTERNS` covering `sk-`/`m0-`/`gh[pousr]-` tokens, BEGIN PRIVATE KEY blocks, AWS access keys (`AKIA…`), and Bearer tokens. The `memory/config.py:RedactionConfig` dataclass shipped a narrower default — only the first two patterns. Because `load_config()` falls back to `RedactionConfig().secret_patterns` whenever a project's `.mem0/config.json` lacks an explicit `redaction:` block (or sets it to empty), a `.mem0/config.json` silently downgraded the redaction surface — AWS keys and Bearer tokens were passed through `scrub()` undetected. Same drift in `block_paths` (`~/.kube/config` missing from the dataclass default).
