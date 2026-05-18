@@ -76,6 +76,13 @@ class ActiveRun:
     fields: dict[str, str]
     directive_bound: bool
     judge_active: bool
+    # Pass 12 (audit Cluster K): bridge model for intake runs. When the
+    # intake skill drafts a run but the pipeline hasn't started, the
+    # control-state writes `active_run: drafting` (not `true`). Hook
+    # callers can downgrade enforcement from deny to warn for drafting
+    # runs — operators still see the scope/manifest context, but the
+    # gates don't block on artifacts the operator is mid-draft on.
+    is_drafting: bool = False
 
 
 def read_hook_input() -> dict[str, Any]:
@@ -124,14 +131,25 @@ def parse_control_state(text: str) -> dict[str, str]:
 
 
 def discover_active_runs(repo_root: Path) -> list[ActiveRun]:
+    """Return active runs found under ``.agent-runs/``.
+
+    Pass 12 (audit Cluster K) extends this to also pick up intake-staged
+    runs that carry ``active_run: drafting`` in their
+    ``active-control-state.md``. Drafting runs are returned with
+    ``is_drafting=True`` so hook callers can downgrade enforcement —
+    warn-not-block — until the operator promotes the run via
+    ``/agent-pipeline-claude:run resume <id>``.
+    """
     base = repo_root / ".agent-runs"
     if not base.exists():
         return []
     runs: list[ActiveRun] = []
     for state_path in sorted(base.glob("*/active-control-state.md")):
         fields = parse_control_state(state_path.read_text(encoding="utf-8-sig", errors="replace"))
-        if fields.get("active_run", "").lower() != "true":
+        state_value = fields.get("active_run", "").lower()
+        if state_value not in {"true", "drafting"}:
             continue
+        is_drafting = (state_value == "drafting")
         run_dir = state_path.parent
         runs.append(
             ActiveRun(
@@ -141,6 +159,7 @@ def discover_active_runs(repo_root: Path) -> list[ActiveRun]:
                 fields=fields,
                 directive_bound=_directive_bound(run_dir),
                 judge_active=(repo_root / ".pipelines" / "action-classification.yaml").exists(),
+                is_drafting=is_drafting,
             )
         )
     return runs
@@ -161,9 +180,11 @@ def session_context(runs: list[ActiveRun]) -> str:
         return ""
     lines = ["Agent Pipeline active run context:"]
     for run in runs:
+        state_label = "DRAFTING (intake-staged)" if run.is_drafting else "ACTIVE"
         lines.append(
             "- "
-            f"run={run.run_id}; stage={run.fields.get('current_stage', '(unknown)')}; "
+            f"run={run.run_id} [{state_label}]; "
+            f"stage={run.fields.get('current_stage', '(unknown)')}; "
             f"next={run.fields.get('next_required_action', '(unspecified)')}; "
             f"continuing_to={run.fields.get('continuing_to', '(unspecified)')}; "
             f"stop_condition={run.fields.get('stop_condition', '(unset)')}; "
@@ -174,6 +195,14 @@ def session_context(runs: list[ActiveRun]) -> str:
         if handoff:
             lines.append("")
             lines.append(handoff)
+    if any(run.is_drafting for run in runs):
+        lines.append(
+            "DRAFTING runs: intake skill staged the manifest/scope-lock but the "
+            "pipeline hasn't started. Scope guards are ADVISORY in this state — "
+            "you'll see warnings but won't be auto-denied for scope violations. "
+            "Resume the run with `/agent-pipeline-claude:run resume <run-id>` "
+            "after the intake TODOs are filled in."
+        )
     lines.append("Respect run.log, manifest.yaml, scope-lock.yaml, directive.yaml, and active-control-state.md before stopping or changing scope.")
     return "\n".join(lines)
 
@@ -327,6 +356,31 @@ def classify_tool_risk(event: dict[str, Any], runs: list[ActiveRun]) -> tuple[st
 
 def permission_decision(event: dict[str, Any], runs: list[ActiveRun]) -> dict[str, Any] | None:
     severity, reasons = classify_tool_risk(event, runs)
+    # Pass 12 / Cluster K: when every active run is in drafting state
+    # (intake-staged, pipeline not yet started), the scope guards are
+    # advisory — we still surface reasons to the operator via the
+    # session context, but we do NOT auto-deny on scope violations
+    # alone. Destructive / secret-exposure patterns still deny because
+    # those reasons are absolute, not run-scoped.
+    only_drafting = bool(runs) and all(run.is_drafting for run in runs)
+    if severity == "deny" and only_drafting:
+        # Drop the run-scoped deny reasons; keep the absolute ones.
+        absolute = [r for r in reasons if not _is_run_scoped_reason(r)]
+        if not absolute:
+            return None  # all reasons were scope-bound → no deny while drafting
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {
+                    "behavior": "deny",
+                    "message": (
+                        "Agent Pipeline hook denied approval request "
+                        "(drafting run; scope guards advisory, but absolute "
+                        "policies still apply): " + "; ".join(absolute)
+                    ),
+                },
+            }
+        }
     if severity == "deny":
         return {
             "hookSpecificOutput": {
@@ -337,7 +391,7 @@ def permission_decision(event: dict[str, Any], runs: list[ActiveRun]) -> dict[st
                 },
             }
         }
-    if severity == "allow" and runs and runs[0].directive_bound:
+    if severity == "allow" and runs and runs[0].directive_bound and not runs[0].is_drafting:
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PermissionRequest",
@@ -345,6 +399,22 @@ def permission_decision(event: dict[str, Any], runs: list[ActiveRun]) -> dict[st
             }
         }
     return None
+
+
+_RUN_SCOPED_REASON_SUBSTRINGS: tuple[str, ...] = (
+    "write target appears outside manifest allowed_paths",
+    "pipeline contract artifact touched",
+)
+
+
+def _is_run_scoped_reason(reason: str) -> bool:
+    """Return True for classify_tool_risk reasons that are bound to the
+    active run's manifest/scope (Pass 12). Drafting runs downgrade these
+    from deny to advisory because the manifest/scope itself is mid-
+    draft. Absolute reasons (destructive command, credential exposure)
+    are NOT in this list — they apply regardless of run state."""
+    lowered = reason.lower()
+    return any(needle in lowered for needle in _RUN_SCOPED_REASON_SUBSTRINGS)
 
 
 def tool_failure_context(event: dict[str, Any]) -> str:

@@ -7,6 +7,30 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — audit Pass 12 (Cluster K) — intake protection bridge (warn-not-block)
+
+ENG-009 / UX-006 / QA-004 / QA-010: the `intake` skill drafted manifest + scope-lock + intake.md under `.agent-runs/<run-id>/` but did not write an `active-control-state.md`. Result: `discover_active_runs()` saw zero active runs, the hook layer ran no scope guards, and the operator got zero signal that a run was staged. The other extreme (auto-creating `active_run: true`) would have been the wrong fix — the manifest is mid-draft and shouldn't auto-deny on `allowed_paths` violations against scope the operator hasn't finalized yet.
+
+The audit-locked decision was **bridge model**: intake writes the active-control-state but with `active_run: drafting`. Hook layer surfaces the run; scope guards downgrade from deny to advisory; absolute reasons (destructive shell, credential exposure) still deny.
+
+- `hooks/hook_utils.py`:
+  - `ActiveRun` dataclass: new `is_drafting: bool = False` field.
+  - `discover_active_runs()` now also picks up runs with `active_run: drafting` and returns them with `is_drafting=True`.
+  - `session_context()` labels drafting runs as `[DRAFTING (intake-staged)]` and appends a paragraph explaining the advisory-mode semantics so the LLM sees the state alongside the standard context.
+  - `permission_decision()` introduces `_is_run_scoped_reason()` to distinguish run-scoped reasons (manifest allowed_paths, pipeline contract artifact) from absolute reasons (destructive command, credential exposure). When every active run is drafting AND every deny reason is run-scoped, returns `None` (no auto-deny). Mixed cases still deny on the absolute reasons.
+  - Directive-bound auto-allow now requires `not is_drafting` — a drafting run with a stale directive-bound run.log line no longer auto-allows.
+- `skills/intake/references/intake.md`: new artifact 5 (`active-control-state.md`) with the bridge content. Updated final-response paragraph names the bridge state and the promotion path (`/agent-pipeline-claude:run resume <id>`).
+- 7 new regression tests in `tests/test_hooks.py`:
+  - `test_discover_active_runs_marks_drafting_runs_is_drafting`
+  - `test_session_context_labels_drafting_run`
+  - `test_permission_decision_does_not_deny_drafting_scope_violation`
+  - `test_permission_decision_still_denies_drafting_absolute_violations`
+  - `test_permission_decision_drafting_does_not_auto_allow_on_directive_bound`
+  - `test_intake_skill_documents_active_control_state_bridge`
+  - (Plus the existing run-discovery test indirectly covers the non-drafting path.)
+
+**Operator impact:** after `/agent-pipeline-claude:intake "feature foo bar"`, the operator sees the drafting run in session-context, can `cat` / edit the manifest freely (no scope-deny ambushes while drafting), but destructive operations (`rm -rf`, leaked credentials) still get blocked. Promoting via `/agent-pipeline-claude:run resume <id>` flips the state to fully active.
+
 ### Fixed — audit Pass 11 (Cluster J + ENG-010) — doc staleness sweep + manifest-template v2.0 gates
 
 Pre-Pass-11 the user-facing docs claimed v1.1.0 / v1.1.1 in version labels, told operators to type `Reply APPROVE to start` in chat (retired by v1.3.0), pointed upgraders at `git checkout v1.1.0`, and left the manifest-template's `required_gates` list silent on the three v2.0 conditional gates (ENG-010). Operators reading the docs got a different mental model than what the code actually did.

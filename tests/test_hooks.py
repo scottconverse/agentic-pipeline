@@ -745,6 +745,143 @@ def test_classify_tool_risk_warns_on_bash_redirect_to_manifest(tmp_path: Path) -
     assert "pipeline contract artifact touched" in reasons
 
 
+# ---------------------------------------------------------------------------
+# Pass 12 regressions: intake bridge model (warn-not-block on drafting runs)
+# ---------------------------------------------------------------------------
+
+
+def _write_drafting_run(tmp_path: Path, run_id: str = "intake-draft") -> Path:
+    """Bridge-state helper: writes the active-control-state.md that the
+    intake skill produces (Pass 12 — active_run: drafting)."""
+    run = tmp_path / ".agent-runs" / run_id
+    run.mkdir(parents=True)
+    (run / "active-control-state.md").write_text(
+        "active_run: drafting\n"
+        "current_stage: intake_drafted\n"
+        "next_required_action: Complete manifest TODOs, then run /agent-pipeline-claude:run resume " + run_id + ".\n"
+        "continuing_to: pipeline_start\n"
+        "stop_condition: awaiting_operator_completion\n"
+        "final_response_allowed: true\n",
+        encoding="utf-8",
+    )
+    return run
+
+
+def test_discover_active_runs_marks_drafting_runs_is_drafting(tmp_path: Path, monkeypatch) -> None:
+    """Pass 12: discover_active_runs returns drafting runs with
+    is_drafting=True (not just is_drafting=False fully-active runs)."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_drafting_run(tmp_path)
+    from hooks.hook_utils import discover_active_runs
+
+    runs = discover_active_runs(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].is_drafting is True
+    assert runs[0].fields.get("current_stage") == "intake_drafted"
+
+
+def test_session_context_labels_drafting_run(tmp_path: Path, monkeypatch) -> None:
+    """session_context must visibly label a drafting run as DRAFTING so
+    the LLM knows the scope guards are advisory in this state."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_drafting_run(tmp_path)
+    from hooks.hook_utils import discover_active_runs, session_context
+
+    runs = discover_active_runs(tmp_path)
+    context = session_context(runs)
+    assert "DRAFTING" in context
+    assert "advisory" in context.lower()
+
+
+def test_permission_decision_does_not_deny_drafting_scope_violation(tmp_path: Path, monkeypatch) -> None:
+    """Pass 12 bridge: when the only active run is drafting and the
+    deny reasons are run-scoped (allowed_paths / contract artifact),
+    permission_decision returns None — operator decides, no auto-deny."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run_dir = _write_drafting_run(tmp_path)
+    (run_dir / "manifest.yaml").write_text(
+        "allowed_paths:\n  - src/\nforbidden_paths: []\n",
+        encoding="utf-8",
+    )
+    from hooks.hook_utils import discover_active_runs, permission_decision
+
+    runs = discover_active_runs(tmp_path)
+    assert runs and runs[0].is_drafting
+
+    event = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "vendor/should-be-warning-only.py",
+            "content": "...",
+        },
+    }
+    payload = permission_decision(event, runs)
+    assert payload is None, (
+        f"drafting-run scope violation must not auto-deny; got {payload!r}"
+    )
+
+
+def test_permission_decision_still_denies_drafting_absolute_violations(tmp_path: Path, monkeypatch) -> None:
+    """Drafting state downgrades RUN-SCOPED reasons only. Absolute
+    reasons (destructive shell, credential exposure) still deny —
+    those apply regardless of run state."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_drafting_run(tmp_path)
+    from hooks.hook_utils import discover_active_runs, permission_decision
+
+    runs = discover_active_runs(tmp_path)
+    assert runs[0].is_drafting
+
+    event = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "rm -rf /"},
+    }
+    payload = permission_decision(event, runs)
+    assert payload is not None
+    decision = payload["hookSpecificOutput"]["decision"]
+    assert decision["behavior"] == "deny"
+    assert "destructive" in decision["message"].lower()
+
+
+def test_permission_decision_drafting_does_not_auto_allow_on_directive_bound(tmp_path: Path, monkeypatch) -> None:
+    """Pre-Pass-12, a drafting run that happened to have a directive-
+    bound run.log entry could auto-allow even though the gates aren't
+    real yet. The is_drafting=True check now blocks that path —
+    auto-allow only fires for fully-active runs."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run_dir = _write_drafting_run(tmp_path)
+    # Plant a directive-bound marker to simulate a partially-set-up run.
+    (run_dir / "run.log").write_text(
+        "2026-05-18T00:00:00Z | directive-bound | COMPLETE | hash=abc123def456abc123def456abc123def456abc123def456abc123def456abcd\n",
+        encoding="utf-8",
+    )
+    from hooks.hook_utils import discover_active_runs, permission_decision
+
+    runs = discover_active_runs(tmp_path)
+    assert runs[0].directive_bound is True
+    assert runs[0].is_drafting is True
+
+    event = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": "src/main.py"},
+    }
+    payload = permission_decision(event, runs)
+    assert payload is None, (
+        f"drafting + directive_bound must NOT auto-allow; got {payload!r}"
+    )
+
+
+def test_intake_skill_documents_active_control_state_bridge() -> None:
+    """skills/intake/references/intake.md must instruct Claude to write
+    active-control-state.md with `active_run: drafting` so the hook
+    layer sees the intake-staged run."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "skills" / "intake" / "references" / "intake.md").read_text(encoding="utf-8")
+    assert "active_run: drafting" in text
+    assert "active-control-state.md" in text
+
+
 def test_tool_failure_context_no_contract_warning_on_read_failure(tmp_path: Path) -> None:
     """tool_failure_context uses the same read-vs-write distinction —
     a failed `cat manifest.yaml` (e.g. file missing) should not emit

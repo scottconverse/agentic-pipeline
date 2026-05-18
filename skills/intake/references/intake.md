@@ -138,11 +138,38 @@ If required information is missing, write
 `.agent-runs/<run_id>/intake-questions.md` listing the missing answers. This is
 expected for most intakes.
 
+### 5. active-control-state.md (Pass 12 — bridge model)
+
+Write `.agent-runs/<run_id>/active-control-state.md` with the drafting bridge
+state so the hook layer surfaces this run in session-context but does NOT
+auto-deny scope violations against a manifest the operator is still drafting:
+
+```markdown
+active_run: drafting
+current_stage: intake_drafted
+next_required_action: Complete the TODOs in manifest.yaml + scope-lock.yaml, then run /agent-pipeline-claude:run resume <run_id>.
+continuing_to: pipeline_start
+stop_condition: awaiting_operator_completion
+final_response_allowed: true
+```
+
+`active_run: drafting` is the bridge state — `discover_active_runs()` returns
+this run with `is_drafting=True`, the session-context line labels it DRAFTING,
+and `permission_decision()` downgrades scope-lock / allowed_paths denies to
+advisory warnings. Absolute reasons (destructive command, credential exposure)
+still deny.
+
+When the operator runs `/agent-pipeline-claude:run resume <run_id>`, the run
+skill flips `active_run` to `true` and the full enforcement set lights up.
+
 ## Final response
 
-Show the paths created, summarize that they are drafts, and tell the user the
-next action is to complete the TODO fields and then run
-`agent-pipeline-claude:run resume <run_id>`.
+Show the paths created (including `active-control-state.md`), summarize that
+they are drafts, name the bridge state (`active_run: drafting` — hooks
+surface this run as advisory but won't auto-deny on scope violations), and
+tell the user the next action is to complete the TODO fields and then run
+`agent-pipeline-claude:run resume <run_id>` to promote the run to full
+enforcement (`active_run: true`).
 
 Do not say the run is ready. Do not start the pipeline.
 
