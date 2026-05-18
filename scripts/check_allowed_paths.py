@@ -24,30 +24,13 @@ try:
 except ImportError:
     _HAS_YAML = False
 
-def _find_repo_root() -> Path:
-    """Resolve the repo root regardless of which supported layout the
-    script is running from. Same logic as check_no_todos.py (PR #7).
-
-    Two supported layouts:
-      * **Plugin source** — ``<repo>/scripts/check_allowed_paths.py``.
-        The repo root is the immediate parent of the ``scripts/`` dir.
-      * **Installed project** — ``<repo>/scripts/policy/check_allowed_paths.py``.
-        After ``/pipeline-init`` copies the script under
-        ``scripts/policy/``, the repo root is two directories up.
-
-    PR #7 applied this fix to check_no_todos.py. The dogfood run on
-    2026-05-11 surfaced that check_allowed_paths.py and check_adr_gate.py
-    still had the original hard-coded ``parents[2]`` and silently
-    resolved above the plugin repo when run from the plugin source
-    layout. This commit ports the same fix to both scripts.
-    """
-    script_dir = Path(__file__).resolve().parent
-    if script_dir.name == "policy" and script_dir.parent.name == "scripts":
-        return script_dir.parents[1]
-    return script_dir.parent
+try:
+    from policy_utils import find_repo_root
+except ModuleNotFoundError:  # pragma: no cover - installed layout
+    from scripts.policy_utils import find_repo_root
 
 
-REPO_ROOT = _find_repo_root()
+REPO_ROOT = find_repo_root(__file__)
 RUN_DIR = REPO_ROOT / ".agent-runs"
 
 

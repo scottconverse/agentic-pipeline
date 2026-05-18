@@ -7,13 +7,38 @@ Ported from agent-pipeline-codex v0.9.0 (scripts/policy_utils.py).
 
 from __future__ import annotations
 
+import os
 import subprocess
 import re
 from pathlib import Path
 
 
 def find_repo_root(script_file: str) -> Path:
-    """Resolve the repo root for source and installed policy layouts."""
+    """Resolve the repo root, preferring the operator's project over the
+    plugin install location.
+
+    Resolution order:
+      1. ``CLAUDE_PROJECT_DIR`` — set by Cowork (and by the hook layer
+         when it spawns subprocesses). In Cowork, the shell ``cwd`` is
+         ``.klodock`` rather than the operator's project, so cwd-based
+         discovery resolves to the wrong tree; the env var is the
+         authoritative pointer.
+      2. ``script_dir.parents[1]`` — when the script lives under
+         ``<project>/scripts/policy/`` after ``pipeline-init``.
+      3. ``git rev-parse --show-toplevel`` from the script's directory —
+         the source-tree path used by pytest and by direct CLI
+         invocations from inside the plugin repo.
+      4. ``script_dir.parent`` — last-resort fallback when no other
+         signal is available.
+
+    The Phase 6.c verification round caught only ``show_run_status.py``
+    missing the env-var check; this central fix propagates to every
+    caller of ``policy_utils.find_repo_root`` (and, by extension, to
+    every script that imports it).
+    """
+    env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env_dir:
+        return Path(env_dir).resolve()
     script_dir = Path(script_file).resolve().parent
     if script_dir.name == "policy" and script_dir.parent.name == "scripts":
         return script_dir.parents[1]

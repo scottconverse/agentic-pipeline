@@ -30,20 +30,14 @@ import sys
 from pathlib import Path
 
 
-def _find_repo_root() -> Path:
-    """Resolve the repo root for both supported layouts.
-
-    * Plugin source: ``<repo>/scripts/run_all.py`` → parent of scripts/.
-    * Installed:     ``<repo>/scripts/policy/run_all.py`` → two up.
-    """
-    script_dir = Path(__file__).resolve().parent
-    if script_dir.name == "policy" and script_dir.parent.name == "scripts":
-        return script_dir.parents[1]
-    return script_dir.parent
+try:
+    from policy_utils import find_repo_root
+except ModuleNotFoundError:  # pragma: no cover - installed layout
+    from scripts.policy_utils import find_repo_root
 
 
 THIS_DIR = Path(__file__).resolve().parent
-REPO_ROOT = _find_repo_root()
+REPO_ROOT = find_repo_root(__file__)
 RUN_DIR_BASE = REPO_ROOT / ".agent-runs"
 
 # Order matters only for human readability of the combined report.

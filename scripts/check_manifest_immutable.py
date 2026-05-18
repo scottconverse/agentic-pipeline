@@ -37,13 +37,10 @@ import hashlib
 import sys
 from pathlib import Path
 
-
-def _find_repo_root() -> Path:
-    p = Path.cwd().resolve()
-    for parent in (p, *p.parents):
-        if (parent / ".git").exists() or (parent / "pyproject.toml").exists():
-            return parent
-    return p
+try:
+    from policy_utils import find_repo_root
+except ModuleNotFoundError:  # pragma: no cover - installed layout
+    from scripts.policy_utils import find_repo_root
 
 
 def _sha256(path: Path) -> str:
@@ -107,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.run:
         return 0
 
-    repo_root = _find_repo_root()
+    repo_root = find_repo_root(__file__)
     run_dir = (repo_root / ".agent-runs" / args.run).resolve()
     if not run_dir.exists():
         print(f"ERROR: run directory not found: {run_dir}", file=sys.stderr)

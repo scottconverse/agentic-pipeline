@@ -69,12 +69,10 @@ class PathFinding:
     reason: str
 
 
-def _find_repo_root() -> Path:
-    p = Path.cwd().resolve()
-    for parent in (p, *p.parents):
-        if (parent / ".git").exists() or (parent / "pyproject.toml").exists():
-            return parent
-    return p
+try:
+    from policy_utils import find_repo_root
+except ModuleNotFoundError:  # pragma: no cover - installed layout
+    from scripts.policy_utils import find_repo_root
 
 
 def _read_yaml(path: Path) -> dict:
@@ -331,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    repo_root = _find_repo_root()
+    repo_root = find_repo_root(__file__)
 
     if args.manifest:
         manifest_path = args.manifest.resolve()

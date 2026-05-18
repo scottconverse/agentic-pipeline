@@ -7,6 +7,17 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — audit Pass 2 (Cluster B) — `find_repo_root` honors `CLAUDE_PROJECT_DIR`
+
+The Phase 6.c verification round fixed `show_run_status.py` to honor `CLAUDE_PROJECT_DIR` but the same-class bug lived in every other v2.0 script. Centralized the fix at `scripts/policy_utils.py:find_repo_root` (the helper now consults `CLAUDE_PROJECT_DIR` before falling back to script-relative discovery) so 16 scripts get the fix transitively.
+
+- `scripts/policy_utils.py` + `skills/pipeline-init/references/pipeline-payload/scripts/policy_utils.py` (mirror): resolution order is now (1) `CLAUDE_PROJECT_DIR`, (2) `<project>/scripts/policy/` installed layout, (3) `git rev-parse --show-toplevel`, (4) `script_dir.parent` last-resort. The mirror is the version that pipeline-init copies into operator projects, so it must stay in lockstep with the top-level (a regression test pins this).
+- Replaced local `_find_repo_root` helpers across 11 scripts with the centralized import: `auto_promote.py`, `check_allowed_paths.py`, `check_adr_gate.py`, `check_manifest_schema.py`, `check_no_todos.py`, `run_all.py`, `check_critic_evidence.py`, `check_stage_done.py`, `check_manifest_paths.py`, `check_manifest_immutable.py`, `check_manager_evidence.py`. `check_active_target.py` keeps its cwd-based intent unchanged (it's about the user's active target, not the project root).
+- `tests/test_check_manifest_schema.py::_run_schema`: also copies `policy_utils.py` into the isolated tmp_path/scripts/ now that the schema script imports from it.
+- Regression: `tests/test_policy_utils.py` (6 new tests) pins the env-var-first resolution order, the `.resolve()` normalization, the installed-layout fallback, the git fallback, the last-resort fallback, and the pipeline-payload mirror lockstep.
+
+**Operator impact:** scripts invoked outside the source tree (e.g., via Cowork from `.klodock` cwd, or by direct subprocess from anywhere) now resolve `.agent-runs/` and friends against the operator's project, not the plugin install cache. Symptoms that should disappear: false "no active run", scope-lock pass against the wrong file, directive-bind drift on resume.
+
 ### Fixed — audit Pass 1 (Cluster A) — Mem0 OSS default port
 
 - `memory/config.py` (OssConfig dataclass default, env-fallback path, dict-parse path), `memory/adapter.py` (OssAdapter constructor default), `pipelines/mem0-config-template.json`, `skills/pipeline-init/references/pipeline-payload/pipelines/mem0-config-template.json`, `schemas/mem0.config.v1.json`, `tests/test_memory_layer.py`: changed default `oss.base_url` from `http://localhost:3000` (the dashboard) to `http://localhost:8888` (the FastAPI server per the vendor `docker-compose.yaml`). The mem0 SDK's `Memory(base_url=...)` expects the API; pointing it at the dashboard silently returns 404 HTML and the circuit breaker masks it.

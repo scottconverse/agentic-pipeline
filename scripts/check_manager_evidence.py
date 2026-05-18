@@ -80,12 +80,10 @@ class FindingRef:
     source: str  # 'critic' or 'drift'
 
 
-def _find_repo_root() -> Path:
-    p = Path.cwd().resolve()
-    for parent in (p, *p.parents):
-        if (parent / ".git").exists() or (parent / "pyproject.toml").exists():
-            return parent
-    return p
+try:
+    from policy_utils import find_repo_root
+except ModuleNotFoundError:  # pragma: no cover - installed layout
+    from scripts.policy_utils import find_repo_root
 
 
 def _extract_finding_ids(report_path: Path, source: str) -> list[FindingRef]:
@@ -212,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.run:
         return 0
 
-    repo_root = _find_repo_root()
+    repo_root = find_repo_root(__file__)
     findings, info = evaluate(args.run, repo_root)
 
     if not findings:

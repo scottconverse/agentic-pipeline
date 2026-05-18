@@ -57,6 +57,7 @@ try:
         evaluate_assertions,
         load_directive,
     )
+    from policy_utils import find_repo_root
 except ModuleNotFoundError:  # pragma: no cover - package import in tests
     from scripts.directive_utils import (
         DirectiveError,
@@ -65,6 +66,7 @@ except ModuleNotFoundError:  # pragma: no cover - package import in tests
         evaluate_assertions,
         load_directive,
     )
+    from scripts.policy_utils import find_repo_root
 
 CRITERIA_LINE_RE = re.compile(
     r"\*\*Criteria:\s*(\d+)\s+total,\s*(\d+)\s+MET,\s*(\d+)\s+PARTIAL,\s*(\d+)\s+NOT MET,\s*(\d+)\s+NOT APPLICABLE\*\*"
@@ -81,15 +83,7 @@ TEST_PASS_PATTERNS = (
 )
 
 
-def _find_repo_root() -> Path:
-    """Resolve the repo root. Same layout-detection as the other policy scripts."""
-    script_dir = Path(__file__).resolve().parent
-    if script_dir.name == "policy" and script_dir.parent.name == "scripts":
-        return script_dir.parents[1]
-    return script_dir.parent
-
-
-REPO_ROOT = _find_repo_root()
+REPO_ROOT = find_repo_root(__file__)
 RUN_DIR_BASE = REPO_ROOT / ".agent-runs"
 
 
