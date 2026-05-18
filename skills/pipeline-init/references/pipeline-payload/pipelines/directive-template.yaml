@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copy this file to .agent-runs/<run-id>/directive.yaml before run-pipeline starts.
+# Presence at run start opts the run into deterministic auto-approval.
+
+version: 1
+
+# Optional self-check. Leave blank while authoring; once final, compute SHA-256
+# over directive.yaml and paste it here. If present, policy checks require it
+# to match the current file.
+content_hash: ""
+
+author:
+  # Human or team that pre-approved this directive contract.
+  name: "Scott Converse"
+  email: ""
+
+authority:
+  # One of: pr_url, design_doc, issue, operator_signature, release_directive.
+  type: "design_doc"
+  # URL, absolute path, issue id, or pasted signature reference.
+  reference: "docs/design/example.md"
+
+preapproved:
+  # Must exactly match .agent-runs/<run-id>/manifest.yaml after YAML parsing.
+  manifest:
+    pipeline_run:
+      id: "YYYY-MM-DD-example"
+      type: "feature"
+      branch: "feature/example"
+      goal: "Implement the approved example slice."
+      allowed_paths:
+        - "src/example/"
+        - "tests/example/"
+      forbidden_paths: []
+      non_goals:
+        - "Do not expand beyond the approved example slice."
+      expected_outputs:
+        - "Example behavior is implemented and tested."
+      required_gates:
+        - "tests"
+        - "policy"
+        - "verifier"
+      risk: "low"
+      rollback_plan: "Revert the feature branch."
+      definition_of_done: "The approved example behavior ships with docs and tests."
+      director_notes: "Directive-conformant run may auto-approve manifest and plan gates."
+
+  # Must exactly match .agent-runs/<run-id>/scope-lock.yaml after YAML parsing.
+  scope_lock:
+    canonical_source: "docs/release-plan.md"
+    current_rung: "example-rung"
+    current_rung_title: "Example rung"
+    proof_statement: "This run implements only the example rung."
+    allowed_feature_terms:
+      - "example"
+    forbidden_future_rung_terms: []
+    scope_bullets:
+      - "Example behavior only."
+    exit_criteria:
+      - "Tests and docs prove the example behavior."
+
+acceptance:
+  # Assertions over .agent-runs/<run-id>/plan.md. All must pass to skip the
+  # interactive plan gate.
+  plan:
+    - id: "plan-has-implementation-section"
+      type: "section"
+      artifact: "plan.md"
+      heading: "Implementation"
+      min_chars: 120
+    - id: "plan-names-tests"
+      type: "regex"
+      artifact: "plan.md"
+      pattern: "(pytest|npm test|failing-tests-report\\.md)"
+      flags: "i"
+      min_count: 1
+    - id: "plan-keeps-test-first-order"
+      type: "callable"
+      name: "mentions_failing_tests_before_execute"
+
+  # Additional assertions checked by auto_promote.py after the existing six
+  # conditions. All must pass for manager auto-promotion.
+  manager:
+    - id: "verifier-covers-expected-outputs"
+      type: "callable"
+      name: "verifier_covers_manifest_expected_outputs"
+    - id: "no-unresolved-caveats"
+      type: "callable"
+      name: "no_unresolved_open_caveats"
