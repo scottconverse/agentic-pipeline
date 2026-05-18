@@ -361,6 +361,126 @@ def test_session_end_spawns_mem0_sync_when_config_present(tmp_path: Path, monkey
     assert kwargs.get("env", {}).get("CLAUDE_PROJECT_DIR") == str(tmp_path)
 
 
+def test_post_tool_use_contract_artifact_warning_does_not_block_on_success(tmp_path: Path, capsys, monkeypatch) -> None:
+    """Phase 6.c bug fix: writing to a contract artifact successfully should
+    surface additionalContext as a warning - NOT a decision: block. Earlier
+    behavior rendered every successful contract-artifact write as a red
+    blocking error in Cowork."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    event = {
+        "cwd": str(tmp_path),
+        "tool_input": {"file_path": str(tmp_path / "manifest.yaml"), "content": "ok"},
+        "tool_response": {"exit_code": 0, "stdout": "wrote 8 bytes"},
+    }
+
+    assert hook_runner.handle_post_tool_use(event) == 0
+    payload = _json_out(capsys)
+    assert payload["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+    assert "contract artifact" in payload["hookSpecificOutput"]["additionalContext"].lower()
+    # Must NOT include decision: block on a successful write
+    assert "decision" not in payload, (
+        "successful contract-artifact write should not return decision: block"
+    )
+
+
+def test_pre_tool_use_denies_write_tool_with_file_path_outside_allowed_paths(tmp_path: Path, capsys, monkeypatch) -> None:
+    """Phase 6.c bug fix: Write tool exposes file_path in tool_input (not a
+    shell command), so the previous shell-redirect-only path extractor
+    silently allowed out-of-scope writes."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _write_active_run(tmp_path)
+    # Tighten the manifest to allow only src/
+    (run / "manifest.yaml").write_text(
+        "allowed_paths:\n  - src/\nforbidden_paths: []\n",
+        encoding="utf-8",
+    )
+
+    event = {
+        "cwd": str(tmp_path),
+        "tool_name": "Write",
+        "tool_input": {"file_path": "/tmp/should-not-write.txt", "content": "hi"},
+    }
+    assert hook_runner.handle_pre_tool_use(event) == 0
+    payload = _json_out(capsys)
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "outside manifest allowed_paths" in payload["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_pre_tool_use_denies_edit_tool_with_file_path_outside_allowed_paths(tmp_path: Path, capsys, monkeypatch) -> None:
+    """Same fix - Edit tool also exposes file_path."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _write_active_run(tmp_path)
+    (run / "manifest.yaml").write_text(
+        "allowed_paths:\n  - src/\nforbidden_paths: []\n",
+        encoding="utf-8",
+    )
+
+    event = {
+        "cwd": str(tmp_path),
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "docs/should-not-edit.md",
+            "old_string": "a",
+            "new_string": "b",
+        },
+    }
+    assert hook_runner.handle_pre_tool_use(event) == 0
+    payload = _json_out(capsys)
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_pre_tool_use_denies_multiedit_with_out_of_scope_file_path(tmp_path: Path, capsys, monkeypatch) -> None:
+    """MultiEdit exposes file_path at the top level - same path field, same
+    extraction rule."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _write_active_run(tmp_path)
+    (run / "manifest.yaml").write_text(
+        "allowed_paths:\n  - src/\nforbidden_paths: []\n",
+        encoding="utf-8",
+    )
+
+    event = {
+        "cwd": str(tmp_path),
+        "tool_name": "MultiEdit",
+        "tool_input": {
+            "file_path": "config/secrets.yaml",
+            "edits": [{"old_string": "a", "new_string": "b"}],
+        },
+    }
+    assert hook_runner.handle_pre_tool_use(event) == 0
+    payload = _json_out(capsys)
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_manifest_list_does_not_spill_into_sibling_yaml_keys(tmp_path: Path) -> None:
+    """Phase 6.c bug fix: _manifest_list previously kept collecting `- ...`
+    items until an unindented line, which made allowed_paths absorb sibling
+    list keys (e.g. required_gates) under the same parent."""
+    from hooks.hook_utils import _manifest_list
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "pipeline_run:\n"
+        "  allowed_paths:\n"
+        "    - src/\n"
+        "    - tests/\n"
+        "  required_gates:\n"
+        "    - tests\n"
+        "    - policy\n"
+        "  forbidden_paths: []\n",
+        encoding="utf-8",
+    )
+
+    allowed = _manifest_list(manifest, "allowed_paths")
+    gates = _manifest_list(manifest, "required_gates")
+
+    assert allowed == ["src/", "tests/"], (
+        f"allowed_paths must not absorb required_gates items; got {allowed}"
+    )
+    assert gates == ["tests", "policy"], (
+        f"required_gates must be collected correctly; got {gates}"
+    )
+
+
 def test_session_end_does_not_spawn_when_mem0_not_configured(tmp_path: Path, monkeypatch) -> None:
     """No .mem0/config.json -> no background subprocess. Layer A still works."""
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)

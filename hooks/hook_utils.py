@@ -246,7 +246,7 @@ def classify_tool_risk(event: dict[str, Any], runs: list[ActiveRun]) -> tuple[st
         if severity != "deny":
             severity = "warn"
         reasons.append("dependency installation changes project state")
-    if runs and _touches_outside_allowed_paths(command, runs[0].run_dir):
+    if runs and _touches_outside_allowed_paths(event, runs[0].run_dir):
         severity = "deny"
         reasons.append("write target appears outside manifest allowed_paths during an active run")
     if "directive.yaml" in haystack or "manifest.yaml" in haystack or "scope-lock.yaml" in haystack:
@@ -479,32 +479,115 @@ def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:
     return any(re.search(pattern, value, flags=re.IGNORECASE) for pattern in patterns)
 
 
-def _touches_outside_allowed_paths(command: str, run_dir: Path) -> bool:
+def _touches_outside_allowed_paths(event_or_command, run_dir: Path) -> bool:
+    """Check if a tool would write to a path outside manifest.allowed_paths.
+
+    Accepts either a Cowork event dict (preferred — extracts file_path from
+    structured tool_input for Write/Edit/MultiEdit/NotebookEdit) or a bare
+    command string (legacy callers that already serialized to text).
+    Returns True only when ALL extracted candidate paths are outside the
+    allowed set and the allowed set is non-empty.
+    """
     manifest = run_dir / "manifest.yaml"
     if not manifest.exists():
         return False
     allowed = _manifest_list(manifest, "allowed_paths")
     if not allowed:
         return False
-    candidate = _extract_write_path(command)
-    if not candidate:
+
+    candidates = _extract_write_paths(event_or_command)
+    if not candidates:
         return False
-    normalized = candidate.replace("\\", "/").lstrip("./")
-    return not any(normalized == item.rstrip("/") or normalized.startswith(item.rstrip("/") + "/") for item in allowed)
+
+    for raw in candidates:
+        normalized = raw.replace("\\", "/").lstrip("./")
+        if not any(
+            normalized == item.rstrip("/") or normalized.startswith(item.rstrip("/") + "/")
+            for item in allowed
+        ):
+            return True
+    return False
+
+
+def _extract_write_paths(event_or_command) -> list[str]:
+    """Return every file path a tool call would write to.
+
+    For Cowork event dicts: pulls `tool_input.file_path` (Write / Edit /
+    NotebookEdit), `tool_input.edits[].file_path` (MultiEdit), and falls
+    back to shell-command parsing for Bash. For bare strings: only the
+    shell-command path.
+    """
+    paths: list[str] = []
+    if isinstance(event_or_command, dict):
+        tool_input = event_or_command.get("tool_input")
+        if isinstance(tool_input, dict):
+            file_path = tool_input.get("file_path")
+            if isinstance(file_path, str) and file_path:
+                paths.append(file_path)
+            # MultiEdit: edits list with per-entry file_path
+            edits = tool_input.get("edits")
+            if isinstance(edits, list):
+                for edit in edits:
+                    if isinstance(edit, dict):
+                        fp = edit.get("file_path")
+                        if isinstance(fp, str) and fp:
+                            paths.append(fp)
+            # NotebookEdit may use notebook_path
+            nb_path = tool_input.get("notebook_path")
+            if isinstance(nb_path, str) and nb_path:
+                paths.append(nb_path)
+        # Always also try the shell command if present
+        command_text = tool_command(event_or_command)
+    else:
+        command_text = str(event_or_command or "")
+
+    legacy = _extract_write_path(command_text)
+    if legacy:
+        paths.append(legacy)
+    # de-dupe while preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for p in paths:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
+    return deduped
 
 
 def _manifest_list(path: Path, key: str) -> list[str]:
+    """Collect `- ...` list items for a YAML key, terminating cleanly at the
+    next sibling key.
+
+    Earlier implementation walked until an unindented line, which spilled
+    across sibling keys in indented YAML (e.g. allowed_paths sitting under
+    pipeline_run: would absorb required_gates items). This version tracks
+    the indent of the matched key and terminates as soon as a non-list line
+    appears at or shallower than that indent.
+    """
     values: list[str] = []
     in_key = False
+    key_indent = -1
     for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         stripped = raw.strip()
-        if stripped.startswith(f"{key}:"):
-            in_key = True
+        if not stripped or stripped.startswith("#"):
             continue
-        if in_key and stripped.startswith("- "):
-            values.append(stripped[2:].strip().strip("\"'"))
+        line_indent = len(raw) - len(raw.lstrip(" \t"))
+        if not in_key:
+            if stripped.startswith(f"{key}:"):
+                in_key = True
+                key_indent = line_indent
             continue
-        if in_key and stripped and not raw.startswith((" ", "\t")):
+        # In list-collection mode for `key`
+        if stripped.startswith("- "):
+            # Require strictly deeper indent than the key itself
+            if line_indent > key_indent:
+                values.append(stripped[2:].strip().strip("\"'"))
+            else:
+                # A dash at <= key_indent means we left this key's subtree
+                break
+            continue
+        # Any other content terminates if it is at or shallower than the key indent
+        if line_indent <= key_indent:
             break
     return values
 

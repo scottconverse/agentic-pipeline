@@ -36,6 +36,30 @@ def _project_root() -> Path:
     return Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
 
 
+def _locate_config_template(project_root: Path) -> Path | None:
+    """Find mem0-config-template.json in any supported location.
+
+    Search order (first hit wins):
+      1. <project>/.pipelines/mem0-config-template.json  - scaffolded by pipeline-init
+      2. <project>/pipelines/mem0-config-template.json   - plugin source layout
+      3. <plugin>/pipelines/mem0-config-template.json    - plugin install dir
+                                                           (last-resort fallback)
+
+    Returns None if none exist. Phase 6.c fix for checkpoint C:
+    mem0_bootstrap previously only checked location 2, which doesn't
+    exist on projects that ran pipeline-init.
+    """
+    candidates = [
+        project_root / ".pipelines" / "mem0-config-template.json",
+        project_root / "pipelines" / "mem0-config-template.json",
+        Path(__file__).resolve().parents[1] / "pipelines" / "mem0-config-template.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 # Pin for the on-demand vendor clone. Refresh by editing this constant
 # and verifying against the new commit. Documented at vendor/VENDOR_PINS.md.
 MEM0_VENDOR_REPO = "https://github.com/mem0ai/mem0.git"
@@ -79,9 +103,14 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"mem0_bootstrap: config already exists at {config_path}. Pass --force to overwrite.")
         return 1
 
-    template_path = root / "pipelines" / "mem0-config-template.json"
-    if not template_path.exists():
-        print(f"mem0_bootstrap: template not found at {template_path}.", file=sys.stderr)
+    template_path = _locate_config_template(root)
+    if template_path is None:
+        print(
+            "mem0_bootstrap: mem0-config-template.json not found in any of: "
+            ".pipelines/ (scaffolded), pipelines/ (plugin source), plugin install dir. "
+            "Re-run pipeline-init or reinstall the plugin.",
+            file=sys.stderr,
+        )
         return 2
     template = json.loads(template_path.read_text(encoding="utf-8"))
     template["mode"] = args.mode

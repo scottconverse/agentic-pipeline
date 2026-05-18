@@ -43,3 +43,29 @@ def test_show_run_status_reports_skipped_malformed_log_lines(tmp_path) -> None:
 
     assert "stages_complete: 1" in summary
     assert "run_log_warning: skipped 1 malformed line(s)" in summary
+
+
+def test_show_run_status_honors_claude_project_dir_at_call_time(tmp_path, monkeypatch, capsys) -> None:
+    """Phase 6.c bug fix (checkpoint H workaround): when the script lives
+    in the plugin install cache (no .git ancestor), main() must resolve
+    the run dir against CLAUDE_PROJECT_DIR rather than the script's
+    parent. _resolve_repo_root() is called inside main() so env changes
+    take effect even though REPO_ROOT was baked at import time."""
+    runs_root = tmp_path / ".agent-runs"
+    run = runs_root / "test-run"
+    run.mkdir(parents=True)
+    (run / "active-control-state.md").write_text(
+        "active_run: true\ncurrent_stage: execute\nfinal_response_allowed: false\nstop_condition: none\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr("sys.argv", ["show_run_status.py", "--run", "test-run"])
+
+    from scripts import show_run_status
+    rc = show_run_status.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "show-run-status: test-run" in out
+    assert "current_stage: execute" in out

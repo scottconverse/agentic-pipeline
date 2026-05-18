@@ -492,6 +492,72 @@ def test_prune_execute_archives_aged_layer_a_dirs(tmp_path, monkeypatch) -> None
     assert archived[0].name.startswith("old-run-")
 
 
+def test_mem0_init_finds_template_in_dot_pipelines(tmp_path, monkeypatch, capsys) -> None:
+    """Phase 6.c bug fix (checkpoint C): mem0 init must find the template
+    at .pipelines/ (where pipeline-init scaffolds it), not only at
+    pipelines/. This test mirrors the actual operator workflow."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    (tmp_path / ".pipelines").mkdir()
+    template = {
+        "mode": "oss",
+        "project": "smoke",
+        "platform": {"api_key_env": "MEM0_API_KEY", "endpoint": "https://api.mem0.ai", "mcp_endpoint": "x"},
+        "oss": {"base_url": "http://localhost:3000", "compose_dir": "./vendor/mem0/server", "admin_api_key_env": "MEM0_ADMIN_API_KEY"},
+        "identity": {"user_id_strategy": "hash_git_email", "agent_id": "claude-code", "app_id_strategy": "slug_git_remote", "run_id_strategy": "branch_sha_epoch"},
+        "retrieval": {"top_k": 10, "token_budget": 1200, "session_start_overflow": 1.5, "enable_prompt_injection": True, "min_prompt_chars": 20, "latency_budget_ms": {"p50": 150, "p95": 400, "session_start": 1500}},
+        "writes": {"allowed_types": ["decision"], "agent_can_delete": False, "agent_can_update": True},
+        "redaction": {"secret_patterns": [], "block_paths": []},
+        "hygiene": {"prune_run_id_after_days": 7, "prune_session_state_after_days": 30, "review_long_lived_after_days": 180},
+        "circuit_breaker": {"consecutive_failures": 5, "open_seconds": 300},
+        "consent": {"platform_requires_consent": True, "consent_file": ".mem0/consent.json"},
+    }
+    import json
+    (tmp_path / ".pipelines" / "mem0-config-template.json").write_text(
+        json.dumps(template, indent=2), encoding="utf-8"
+    )
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    import mem0_bootstrap
+    import argparse
+    args = argparse.Namespace(mode="oss", force=False)
+
+    rc = mem0_bootstrap.cmd_init(args)
+
+    assert rc == 0
+    assert (tmp_path / ".mem0" / "config.json").exists()
+
+
+def test_mem0_init_missing_template_returns_clear_error(tmp_path, monkeypatch, capsys) -> None:
+    """When no template exists in any of the three search locations,
+    cmd_init returns 2 with a clear error naming the search paths."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    # Stub out the plugin-install-dir fallback so the third location also misses.
+    # We do this by pointing the source root at an empty tmp.
+    import mem0_bootstrap
+    real_locate = mem0_bootstrap._locate_config_template
+
+    def stub_locate(project_root):
+        # Search only .pipelines/ and pipelines/, skip plugin fallback
+        for sub in (".pipelines", "pipelines"):
+            candidate = project_root / sub / "mem0-config-template.json"
+            if candidate.exists():
+                return candidate
+        return None
+
+    monkeypatch.setattr(mem0_bootstrap, "_locate_config_template", stub_locate)
+
+    import argparse
+    args = argparse.Namespace(mode="oss", force=False)
+
+    rc = mem0_bootstrap.cmd_init(args)
+
+    assert rc == 2
+
+
 def test_prune_execute_without_yes_refuses(tmp_path, monkeypatch) -> None:
     """--execute without --yes refuses to act (FR-12 non-interactive token)."""
     import sys

@@ -26,6 +26,7 @@ import sys
 
 try:
     from hook_utils import (
+        _tool_response_failed,
         append_hook_event,
         classify_tool_risk,
         discover_active_runs,
@@ -43,6 +44,7 @@ try:
     )
 except ModuleNotFoundError:  # pragma: no cover - package import from tests
     from hooks.hook_utils import (
+        _tool_response_failed,
         append_hook_event,
         classify_tool_risk,
         discover_active_runs,
@@ -136,22 +138,34 @@ def handle_permission_request(event: dict) -> int:
 
 
 def handle_post_tool_use(event: dict) -> int:
+    """Surface corrective context after tool calls.
+
+    Behavior split (fix from Phase 6.b verification report):
+      * On actual tool failure  -> decision: block + additionalContext.
+        Cowork surfaces this as a blocking error, which is correct: the
+        run state is genuinely broken.
+      * On successful contract-artifact touch -> additionalContext only,
+        no decision: block. Earlier behavior returned block here too,
+        which made every successful write to manifest/scope-lock/directive
+        render as a red error in Cowork even though the write succeeded.
+    """
     root = repo_root_from_event(event)
     context = tool_failure_context(event)
     if not context:
         return 0
+    failed = _tool_response_failed(event.get("tool_response"))
     append_hook_event(root, "PostToolUse", context)
-    record_hook_memory(root, "PostToolUse", context, {"blocked": True})
-    return write_json(
-        {
-            "decision": "block",
-            "reason": "Agent Pipeline hook is replacing the tool result with pipeline continuation guidance.",
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "additionalContext": context,
-            },
+    record_hook_memory(root, "PostToolUse", context, {"blocked": failed})
+    payload: dict = {
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": context,
         }
-    )
+    }
+    if failed:
+        payload["decision"] = "block"
+        payload["reason"] = "Agent Pipeline hook is replacing the tool result with pipeline continuation guidance."
+    return write_json(payload)
 
 
 def handle_post_tool_use_failure(event: dict) -> int:
