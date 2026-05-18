@@ -7,6 +7,16 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — audit Pass 3 (Cluster C) — wire v2.0 policy scripts into `run_all.py`
+
+`scripts/run_all.py` CHECKS list and the bundled payload mirror (`skills/pipeline-init/references/pipeline-payload/scripts/run_all.py`) were stale v1.x — none of the v2.0 policy scripts (directive conformance, scope-lock authority, rung-file-ownership, release-docs consistency, control-loop, execute readiness, decision-ledger) were invoked from the `policy` stage of any pipeline. The entire v2.0 enforcement layer was dead code from the orchestrator's perspective. The "heavier hand" pitch in this changelog was unrealized at the place that matters: the run skill flow.
+
+- `scripts/run_all.py`: added seven v2.0 entries to CHECKS, populated `CHECK_PREREQUISITES` mapping each v2.0 check to the run-dir artifact it depends on (e.g., `check_scope_lock` → `scope-lock.yaml`), and gated invocation on prerequisite presence — when absent the check is SKIPPED (counted as PASS for the policy gate) rather than FAILED. Version literal bumped from 1.3.1 → 2.0.0. Added v2.0 names to `run_consumers` so `--run` is passed through.
+- `skills/pipeline-init/references/pipeline-payload/scripts/run_all.py`: mirrored the top-level changes; also picked up the Pass 2 `find_repo_root` centralization (the mirror still had the local `_find_repo_root` helper).
+- 4 new regression tests in `tests/test_run_all_writes_policy_report.py`: `test_v20_checks_are_in_checks_list`, `test_v20_checks_have_prerequisites_mapped`, `test_v20_checks_skip_when_prereq_missing`, `test_pipeline_payload_run_all_matches_top_level`.
+
+**Operator impact:** policy stage now actually enforces v2.0 contracts for runs that opt in (i.e., runs whose `.agent-runs/<run-id>/` contains the relevant artifacts). v1.x runs that don't have those artifacts are unaffected — every v2.0 check skips with a `SKIP - <artifact> not present in run dir` line in `policy-report.md`. The conditional-skip preserves backwards-compat without requiring a project-level "v2.0 opt-in" flag.
+
 ### Fixed — audit Pass 2 (Cluster B) — `find_repo_root` honors `CLAUDE_PROJECT_DIR`
 
 The Phase 6.c verification round fixed `show_run_status.py` to honor `CLAUDE_PROJECT_DIR` but the same-class bug lived in every other v2.0 script. Centralized the fix at `scripts/policy_utils.py:find_repo_root` (the helper now consults `CLAUDE_PROJECT_DIR` before falling back to script-relative discovery) so 16 scripts get the fix transitively.
