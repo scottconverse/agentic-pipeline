@@ -7,6 +7,16 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-05-18
+
+**Heavier-hand redesign.** Takes the opposite direction from PR #22 (closed 2026-05-17) which collapsed gates and removed enforcement. v2.0 keeps the gates and adds enforcement everywhere — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval, scope-lock authority, intake skill, persistent file-backed run memory, and an MCP Mem0 layer for cross-session continuity. Codex stays lighter; claude takes the heavier hand because Claude historically loses focus mid-run and the runtime needs to catch it.
+
+**Final tag: 289 tests passing, 1 skipped (cleanroom_e2e).** The v2.0 feature surface (Phases 1-7 below) reached HEAD `9634929` with 191 tests. A post-implementation `/audit-team` round produced 96 findings (4 Blockers, 18 Criticals, 35 Majors, 26 Minors, 13 Nits); a 17-commit fix loop with two audit-lite checkpoints closed every Blocker and Critical. The branch + audit-fix loop merged into `main` at `5f230ce` and the `v2.0.0` tag was applied there. **No CI / no Cowork-runtime regression was found by either audit-lite or the second-pass verifier after the final commit.**
+
+### Fixed — audit fix loop (Passes 1-13 with follow-ups Pass 8a + Pass 11b/c/d)
+
+The 17 fix-loop commits below shipped under tag `v2.0.0`. Listed newest-commit-first. Two follow-up passes (8a, 11b/c/d) close same-class fan-out failures the audit-lites caught between batches.
+
 ### Added — audit Pass 13 (Cluster L + M) — control-loop smoke tests + Python launcher doc
 
 Two threads in one pass:
@@ -59,6 +69,12 @@ Pre-Pass-11 the user-facing docs claimed v1.1.0 / v1.1.1 in version labels, told
 - 9 new regression tests in `tests/test_v130_redesign.py` pinning: README has no "Reply APPROVE to start" / "git checkout v1.1.0"; USER-MANUAL upgrade snippet targets v2.0.0; ARCHITECTURE Current version is v2.0.0; tests/README and docs/index.html version labels are v2.0+; manifest-template documents the three v2.0 conditional gates (both top-level + mirror); directive-template uses placeholder author/reference (both top-level + mirror); check_manifest_schema.py error string contains no `chat-APPROVE`.
 
 **Doc consistency invariant:** version labels and the modal-gate description match the code in README, USER-MANUAL, ARCHITECTURE, tests/README, docs/VERIFICATION, and the docs/index.html eyebrow/badge/footer. Pre-Pass-11 was worst-of-both-worlds: docs sold v1.x ceremony while code ran v2.0 hooks + modal gates. (Pass 11b — see entry above — closed three residual operator-facing chat-APPROVE surfaces inside `docs/index.html`'s stage-flow + gate-cards, the USER-MANUAL Glossary, and the `check_manifest_schema.py` payload mirror that Pass 11 missed.)
+
+### Fixed — audit Pass 11b/c/d (chat-APPROVE residue + case-insensitive sweep test)
+
+Three follow-up passes closing one more layer of operator-facing chat-APPROVE residue each time the end-sprint verifier caught variants Pass 11 missed. **Pass 11b** (commit `2d66d8f`): three residues in `docs/index.html` (stage-flow diagram, "Three human gates" section, first-use copy), `USER-MANUAL.md` Glossary + Migration sections, and the `check_manifest_schema.py` payload mirror that Pass 11 hadn't synced. **Pass 11c** (commit `43bbb0e`): one more lowercase `approve in chat` residue in `docs/index.html`'s Problem section, caught by post-Pass-11b grep. **Pass 11d** (commit `0106d66`): two operator-facing residues (`README.md:5` "asks you to APPROVE in chat", `ARCHITECTURE.md:856` Glossary `Gate` def "operator must type APPROVE") flagged by the end-sprint independent verifier, plus a case-insensitive regex grep that surfaced six more residues across `README.md` (3 sites), `USER-MANUAL.md`, `docs/module-release-handbook.md`, `pipelines/roles/manifest-drafter.md` + mirror, and `ARCHITECTURE.md` Mermaid + sequence diagrams.
+
+Structural fix in 11d: new parametrized regression test `test_no_chat_approve_instructional_residue` runs a CASE-INSENSITIVE pattern sweep across 7 operator-facing files for the residue family (`APPROVE in chat`, `chat-message APPROVE`, `Reply APPROVE to`, `type APPROVE`, `operator must type APPROVE`, `in chat and APPROVE`). Lines containing `retired` / `v1.3.0 replaced` / `v0.5.x` / `ceremony` / `no longer` are scoped out so honest historical mentions of the retirement survive. The next doc edit that re-introduces any variant fails CI.
 
 ### Fixed — audit Pass 11b (Pass 11 chat-APPROVE residue) — operator-facing landing page + glossary + mirror sweep
 
@@ -186,12 +202,6 @@ The Phase 6.c verification round fixed `show_run_status.py` to honor `CLAUDE_PRO
 - Regression: `tests/test_memory_layer.py::test_oss_config_default_port_is_api` pins `OssConfig().base_url == "http://localhost:8888"` and the canonical template's `oss.base_url`. Any future change to either default will fail the test.
 
 **Operator action on upgrade:** if you already ran `mem0 init` against the pre-fix template, your `.mem0/config.json` still has the wrong port. Re-run `python scripts/mem0_bootstrap.py init --mode oss --force` or hand-edit `oss.base_url` to `http://localhost:8888`.
-
-## [2.0.0] — 2026-05-17
-
-**Heavier-hand redesign.** Takes the opposite direction from PR #22 (closed 2026-05-17) which collapsed gates and removed enforcement. v2.0 keeps the gates and adds enforcement everywhere — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval, scope-lock authority, intake skill, persistent file-backed run memory, and an MCP Mem0 layer for cross-session continuity. Codex stays lighter; claude takes the heavier hand because Claude historically loses focus mid-run and the runtime needs to catch it.
-
-191 tests, 1 skipped (cleanroom_e2e), all green at HEAD `9634929`. Branch `v2.0-heavier-hand`. (The audit Pass 11 sweep corrected this number from a stale "171" — the actual count at the v2.0.0 commit was 191.)
 
 ### Added — Phase 1: foundation policy ports (from agent-pipeline-codex v0.9.0)
 
