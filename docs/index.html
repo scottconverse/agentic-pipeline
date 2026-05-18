@@ -193,32 +193,32 @@ footer a { color: var(--fg-muted); }
   <h2>What a run looks like</h2>
   <p>You type one slash command. The plugin reads your project's spec, drafts a scope contract from it, and shows you YAML in chat.</p>
   <pre><code>/agent-pipeline-claude:run "close QA-005 conflict-409 race"</code></pre>
-  <div class="stage-flow">manifest-drafter  →  [gate 1: chat APPROVE]
+  <div class="stage-flow">manifest-drafter  →  [gate 1: modal APPROVE]
 researcher        →  research.md
-planner           →  plan.md           →  [gate 2: chat APPROVE]
+planner           →  plan.md           →  [gate 2: modal APPROVE]
 test-writer       →  failing-tests-report.md
 executor          →  implementation-report.md
-policy            →  policy-report.md  (4 stdlib-only checks)
+policy            →  policy-report.md  (14 stdlib-only checks; v2.0)
 verifier          →  verifier-report.md
 drift-detector    →  drift-report.md
 critic            →  critic-report.md
-auto-promote      →  auto-promote-report.md  (6 conditions)
-manager           →  manager-decision.md     →  [gate 3: chat APPROVE]</div>
+auto-promote      →  auto-promote-report.md  (6 conditions; auto-fires on green)
+manager           →  manager-decision.md     →  [gate 3: modal APPROVE]</div>
   <p>Every stage writes an artifact to <code>.agent-runs/&lt;run-id&gt;/</code>. The run is resumable from any failed stage via <code>/agent-pipeline-claude:run resume &lt;run-id&gt;</code>. The judge layer (opt-in) sits between stages and supervises every external-facing or high-risk action against the manifest. The drift-detector catches edits to files outside <code>allowed_paths</code>. The critic runs as a separate Agent and can't co-conspire with the executor.</p>
 </section>
 
 <section>
-  <h2>Three human gates, in chat</h2>
+  <h2>Three human gates — modal, one click each</h2>
   <div class="gate-card">
-    <strong>Gate 1 — Manifest approval.</strong> The drafter reads your project's spec / release plan / scope-lock / design notes and produces a YAML manifest with every field annotated by source. You reply <code>APPROVE</code> to lock the scope contract, or describe what to change.
+    <strong>Gate 1 — Manifest approval.</strong> The drafter reads your project's spec / release plan / scope-lock / design notes and produces a YAML manifest with every field annotated by source. A modal prompt (<code>AskUserQuestion</code>) appears with <strong>APPROVE</strong> / <strong>Adjust</strong> / <strong>BLOCK</strong> — one click each.
   </div>
   <div class="gate-card">
-    <strong>Gate 2 — Plan approval.</strong> After research, the planner produces a step-numbered plan with blast radius. You reply <code>APPROVE</code> to execute, <code>REPLAN &lt;description&gt;</code> to revise.
+    <strong>Gate 2 — Plan approval.</strong> After research, the planner produces a step-numbered plan with blast radius. The modal offers <strong>APPROVE</strong> / <strong>REPLAN</strong> / <strong>BLOCK</strong>; you can also type a free-form REPLAN reason in the modal's text field.
   </div>
   <div class="gate-card">
-    <strong>Gate 3 — Manager approval.</strong> After verify/drift/critic/auto-promote complete, the manager produces a structured decision document. You reply <code>APPROVE</code> to merge, <code>REPLAN</code> to send back for another loop, or <code>BLOCK</code> to halt.
+    <strong>Gate 3 — Manager approval.</strong> After verify / drift / critic / auto-promote complete, the manager produces a structured decision document. The modal offers <strong>APPROVE</strong> / <strong>REPLAN</strong> / <strong>BLOCK</strong>. When the six auto-promote conditions all pass, this gate fires automatically — no click needed.
   </div>
-  <p>Gates are chat messages, not modal popups. They survive across sessions; you can resume any run from its last gate.</p>
+  <p>v1.3.0 retired the v0.5.x free-form "type APPROVE in chat" ceremony because the LLM kept halting on the interpretive surface area of free-text gates. v2.0 keeps the modal flow and adds an eleven-event Cowork hook layer underneath. Runs survive across sessions; you can resume any run from its last gate.</p>
 </section>
 
 <section id="install">
@@ -242,7 +242,7 @@ manager           →  manager-decision.md     →  [gate 3: chat APPROVE]</div>
   <pre><code>/agent-pipeline-claude:pipeline-init</code></pre>
   <p>The plugin scans for your spec, release plan, scope-lock, design notes, CLAUDE.md, and HANDOFF.md. It scaffolds <code>.pipelines/</code> (14 role files, 5 pipeline definitions, 3 templates) and <code>scripts/policy/</code> (6 stdlib-only validation scripts) into your project. Then:</p>
   <pre><code>/agent-pipeline-claude:run "your task description"</code></pre>
-  <p>The manifest-drafter runs. You approve in chat. The pipeline executes end-to-end.</p>
+  <p>The manifest-drafter runs. You click APPROVE in the modal that fires immediately after. The pipeline executes end-to-end.</p>
 </section>
 
 <section>

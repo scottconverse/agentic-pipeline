@@ -322,6 +322,87 @@ def test_check_manifest_schema_error_does_not_mention_chat_approve():
 
 
 # ---------------------------------------------------------------------------
+# Pass 11b regressions: chat-APPROVE residue sweep (post-Pass-11 audit-lite)
+# ---------------------------------------------------------------------------
+#
+# End-sprint audit-lite caught operator-facing chat-APPROVE residue that
+# Pass 11 missed: docs/index.html stage-flow + "Three human gates"
+# gate-cards + first-use copy still said `chat APPROVE`; USER-MANUAL
+# Glossary + Migration sections still described gates as chat messages;
+# the pipeline-payload mirror of check_manifest_schema.py still had the
+# pre-Pass-11 error string with `chat-APPROVE` (Pass 11 fixed only the
+# top-level). Same pattern-fan-out failure mode Pass 8a closed for
+# find_repo_root. Pass 11b closes the doc-surface fan-out.
+
+
+def test_landing_page_stage_flow_uses_modal_not_chat_approve():
+    """docs/index.html stage-flow diagram (the <pre class='stage-flow'>
+    block) must show `modal APPROVE` for the three gate annotations,
+    not `chat APPROVE`."""
+    text = _read(REPO_ROOT / "docs" / "index.html")
+    assert "chat APPROVE" not in text, (
+        "landing page still labels gates as `chat APPROVE`; should be `modal APPROVE`"
+    )
+
+
+def test_landing_page_three_gates_heading_says_modal():
+    """The <h2> for the three-gates section must name modal gates, and
+    the gate-card body copy must not say `Reply APPROVE`."""
+    text = _read(REPO_ROOT / "docs" / "index.html")
+    assert "Three human gates, in chat" not in text, (
+        "landing page heading still says `Three human gates, in chat` — should be modal-labelled"
+    )
+    assert "Reply " not in text or "Reply APPROVE" not in text
+    assert "modal" in text.lower(), "landing page should describe gates as modal"
+
+
+def test_landing_page_does_not_claim_gates_are_chat_messages_not_modal():
+    """The pre-Pass-11b copy declared `Gates are chat messages, not
+    modal popups.` That's the inverse of the truth."""
+    text = _read(REPO_ROOT / "docs" / "index.html")
+    assert "Gates are chat messages, not modal popups" not in text
+
+
+def test_landing_page_first_use_does_not_say_approve_in_chat():
+    """`You approve in chat.` in the First-use section is wrong post-v1.3.0."""
+    text = _read(REPO_ROOT / "docs" / "index.html")
+    assert "You approve in chat" not in text
+
+
+def test_user_manual_glossary_manifest_uses_modal_language():
+    """USER-MANUAL Glossary `Manifest` entry must describe the gate as
+    a modal, not `gated on chat APPROVE`."""
+    text = _read(REPO_ROOT / "USER-MANUAL.md")
+    assert "gated on chat APPROVE" not in text
+
+
+def test_user_manual_migration_section_describes_modal_gates():
+    """USER-MANUAL Migration from v0.5.x must describe modal gates, not
+    `chat messages (APPROVE / REPLAN / BLOCK), not modal popups`."""
+    text = _read(REPO_ROOT / "USER-MANUAL.md")
+    assert "chat messages (APPROVE / REPLAN / BLOCK), not modal popups" not in text
+
+
+def test_check_manifest_schema_mirror_matches_top_level_chat_approve_removal():
+    """Pass 11 fixed the chat-APPROVE error string in the top-level
+    check_manifest_schema.py but left the pipeline-payload mirror
+    unchanged. Pass 11b syncs the mirror. This test pins lockstep so
+    a future fix can't drift the two sides apart again."""
+    top_level = _read(REPO_ROOT / "scripts" / "check_manifest_schema.py")
+    mirror = _read(
+        REPO_ROOT
+        / "skills" / "pipeline-init" / "references" / "pipeline-payload" / "scripts"
+        / "check_manifest_schema.py"
+    )
+    # Both should be free of the pre-Pass-11 string.
+    assert "chat-APPROVE" not in top_level, "top-level still cites chat-APPROVE"
+    assert "chat-APPROVE" not in mirror, (
+        "pipeline-payload mirror of check_manifest_schema.py still cites "
+        "chat-APPROVE — Pass 11 missed this; Pass 11b should close it."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Version pin
 # ---------------------------------------------------------------------------
 

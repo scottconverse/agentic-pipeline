@@ -389,9 +389,10 @@ def _check(fields: dict[str, object]) -> list[dict[str, str]]:
                 "problem": f"unknown value {gate_policy!r}; expected 'human' or 'autonomous'",
                 "current": _short_repr(gate_policy),
                 "suggest": (
-                    "set to 'human' (default; three gates require chat-APPROVE) or "
-                    "'autonomous' (requires a valid autonomous_grant; gates marked "
-                    "v1.3.0: modal gates fire via AskUserQuestion)."
+                    "v1.3.0+ retired the gate_policy field entirely. The three human "
+                    "gates (manifest, plan, manager) fire as one-click AskUserQuestion "
+                    "modals; manager auto-fires on green evidence. Remove the "
+                    "gate_policy line — no replacement value is needed."
                 ),
             }
         )

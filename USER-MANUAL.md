@@ -382,11 +382,11 @@ On Linux distributions where `python` isn't installed by the distro python packa
 
 ## Glossary
 
-- **Manifest** — the per-run scope contract. YAML at `.agent-runs/<run-id>/manifest.yaml`. Drafted from your project's spec, gated on chat APPROVE.
+- **Manifest** — the per-run scope contract. YAML at `.agent-runs/<run-id>/manifest.yaml`. Drafted from your project's spec, gated on a one-click modal APPROVE (`AskUserQuestion`) since v1.3.0.
 - **Pipeline** — the ordered list of stages for a run type, defined in `.pipelines/<type>.yaml`. Default types: `feature`, `bugfix`, `module-release`.
 - **Stage** — one step in a pipeline. Each writes a named artifact to `.agent-runs/<run-id>/`.
 - **Role** — the markdown file at `.pipelines/roles/<role>.md` that tells a subagent how to perform one stage. Self-contained — a fresh Claude session can execute the stage from the role file alone.
-- **Gate** — a halt-and-prompt point. Three universal verbs: APPROVE, REPLAN, BLOCK.
+- **Gate** — a halt-and-prompt point. Three universal verbs: APPROVE, REPLAN, BLOCK. Surfaced as modal options via `AskUserQuestion`; the v0.5.x free-form "type APPROVE in chat" ceremony was retired in v1.3.0.
 - **Auto-promote** — the six-condition machine check that bypasses the manager gate when all conditions pass. Conditions: verifier-clean, critic-clean, drift-clean, policy-passed, judge-clean, tests-passed.
 - **Judge layer** — opt-in real-time action supervision. Activated by the presence of `.pipelines/action-classification.yaml`.
 - **Drift-detector** — adversarial stage that compares manifest contract against the assembled final state. Catches doc drift, status-word abuse, cross-file inconsistency.
@@ -399,10 +399,10 @@ If you're upgrading directly from v0.5.x and skipped v1.0:
 
 - The two-step `/new-run` + `/run-pipeline` is gone. Use `/agent-pipeline-claude:run "<description>"`.
 - The manifest is drafted from your project's spec; you no longer hand-author 11 fields from blank.
-- All three human gates are chat messages (APPROVE / REPLAN / BLOCK), not modal popups.
+- All three human gates fire as one-click `AskUserQuestion` modal prompts (APPROVE / REPLAN / BLOCK as labels). The v0.5.x free-form chat-APPROVE ceremony was retired in v1.3.0.
 - All slash invocations are namespaced: `/agent-pipeline-claude:<skill>` instead of `/<skill>`.
 
-The manifest schema, role files, policy scripts, and pipeline definitions are unchanged. Existing `.agent-runs/<run-id>/` directories from v0.5.x runs work as resumable runs in v1.1.
+The manifest schema, role files, policy scripts, and pipeline definitions are unchanged across the line. Existing `.agent-runs/<run-id>/` directories from v0.5.x runs work as resumable runs in v2.0.
 
 To upgrade:
 
