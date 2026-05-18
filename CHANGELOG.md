@@ -7,6 +7,16 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — audit Pass 4 (Cluster D) — directive ↔ scope-lock field vocabulary
+
+`pipelines/directive-template.yaml`'s `preapproved.scope_lock` block used three field names that don't match `scripts/check_scope_lock.py`'s vocabulary — `current_rung_title` instead of `rung_title`, `proof_statement` instead of `proves`, `forbidden_future_rung_terms` instead of `forbidden_feature_terms_without_replan`. Because `directive_utils.compare_preapproved` uses exact dict-equality, a directive authored from this template against a scope-lock.yaml authored from `scope-lock-template.yaml` was structurally impossible to satisfy: `actual == expected` always returned False.
+
+- `pipelines/directive-template.yaml` + `skills/pipeline-init/references/pipeline-payload/pipelines/directive-template.yaml` (mirror): renamed the three diverged fields to match the canonical scope-lock-template vocabulary; added `required_modules: []` and `replan_required_if: [...]` so the directive's preapproved.scope_lock has the same top-level structure as a scope-lock.yaml copied from the other template.
+- `tests/test_directive_contract.py`: updated `SCOPE_LOCK` fixture to use canonical field names (drift here would have let the test pass while the real template was broken).
+- 3 new regression tests: `test_directive_template_scope_lock_uses_canonical_field_names` (rejects pre-Pass-4 names), `test_directive_template_scope_lock_fields_match_scope_lock_template` (asserts directive includes every scope-lock-template top-level key), `test_directive_template_mirror_matches_top_level` (pipeline-payload mirror lockstep).
+
+**Operator impact:** authors of new directives can now copy the directive-template's `preapproved.scope_lock` block alongside a scope-lock.yaml copied from `scope-lock-template.yaml` and have the comparison succeed. Pre-Pass-4 authors had to manually rename three fields to make their directive even possible to satisfy.
+
 ### Fixed — audit Pass 3 (Cluster C) — wire v2.0 policy scripts into `run_all.py`
 
 `scripts/run_all.py` CHECKS list and the bundled payload mirror (`skills/pipeline-init/references/pipeline-payload/scripts/run_all.py`) were stale v1.x — none of the v2.0 policy scripts (directive conformance, scope-lock authority, rung-file-ownership, release-docs consistency, control-loop, execute readiness, decision-ledger) were invoked from the `policy` stage of any pipeline. The entire v2.0 enforcement layer was dead code from the orchestrator's perspective. The "heavier hand" pitch in this changelog was unrealized at the place that matters: the run skill flow.

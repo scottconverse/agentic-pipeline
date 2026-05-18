@@ -45,19 +45,28 @@ preapproved:
       definition_of_done: "The approved example behavior ships with docs and tests."
       director_notes: "Directive-conformant run may auto-approve manifest and plan gates."
 
-  # Must exactly match .agent-runs/<run-id>/scope-lock.yaml after YAML parsing.
+  # Must exactly match .agent-runs/<run-id>/scope-lock.yaml after YAML
+  # parsing. Field names match pipelines/scope-lock-template.yaml — the
+  # comparison is dict-equality, so any field-name divergence (e.g. the
+  # pre-Pass-4 `current_rung_title`/`proof_statement`/`forbidden_future_
+  # rung_terms`) makes the directive structurally impossible to satisfy.
   scope_lock:
-    canonical_source: "docs/release-plan.md"
     current_rung: "example-rung"
-    current_rung_title: "Example rung"
-    proof_statement: "This run implements only the example rung."
+    canonical_source: "docs/release-plan.md"
+    rung_title: "Example rung"
+    proves: "This run implements only the example rung."
+    required_modules: []
     allowed_feature_terms:
       - "example"
-    forbidden_future_rung_terms: []
+    forbidden_feature_terms_without_replan: []
     scope_bullets:
       - "Example behavior only."
     exit_criteria:
       - "Tests and docs prove the example behavior."
+    replan_required_if:
+      - README/CHANGELOG/docs index names another rung
+      - implementation path belongs to another rung
+      - user wording conflicts with release-plan.md
 
 acceptance:
   # Assertions over .agent-runs/<run-id>/plan.md. All must pass to skip the

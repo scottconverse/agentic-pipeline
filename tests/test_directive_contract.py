@@ -5,8 +5,21 @@
 
 from pathlib import Path
 
+import yaml
+
 from scripts import auto_promote, check_directive_conformance, check_plan_against_directive
 from scripts.directive_utils import sha256_file
+
+
+# Repo paths used by template-lockstep regressions.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_DIRECTIVE_TEMPLATE = _REPO_ROOT / "pipelines" / "directive-template.yaml"
+_SCOPE_LOCK_TEMPLATE = _REPO_ROOT / "pipelines" / "scope-lock-template.yaml"
+_DIRECTIVE_TEMPLATE_MIRROR = (
+    _REPO_ROOT
+    / "skills" / "pipeline-init" / "references" / "pipeline-payload"
+    / "pipelines" / "directive-template.yaml"
+)
 
 
 MANIFEST = {
@@ -21,14 +34,23 @@ MANIFEST = {
     }
 }
 
+# Field names match scope-lock-template.yaml (audit Pass 4 / Cluster D
+# reconciliation): rung_title (not current_rung_title), proves (not
+# proof_statement), forbidden_feature_terms_without_replan (not
+# forbidden_future_rung_terms). The directive comparison is exact
+# dict-equality; field-name drift here would let the test mask the real
+# template's structural mismatch.
 SCOPE_LOCK = {
-    "canonical_source": "docs/release-plan.md",
     "current_rung": "directive-contract",
-    "proof_statement": "Only directive contract work is in scope.",
+    "canonical_source": "docs/release-plan.md",
+    "rung_title": "Directive contract",
+    "proves": "Only directive contract work is in scope.",
+    "required_modules": [],
     "allowed_feature_terms": ["directive"],
-    "forbidden_future_rung_terms": ["unrelated"],
+    "forbidden_feature_terms_without_replan": ["unrelated"],
     "scope_bullets": ["Implement directive contract."],
     "exit_criteria": ["Directive checks pass."],
+    "replan_required_if": [],
 }
 
 
@@ -285,3 +307,94 @@ def test_bind_into_existing_run_log_appends_and_preserves_prior_content(tmp_path
     lines = (run_dir / "run.log").read_text(encoding="utf-8").splitlines()
     assert lines[0] == prior.strip()
     assert "directive-bound | COMPLETE | hash=" in lines[1]
+
+
+# ---------------------------------------------------------------------------
+# Pass 4 (audit Cluster D / ENG-004) regressions: directive ↔ scope-lock
+# field vocabulary alignment.
+# ---------------------------------------------------------------------------
+#
+# `directive_utils.compare_preapproved` uses dict-equality, so the
+# directive's `preapproved.scope_lock` must use the SAME field names as
+# `scope-lock-template.yaml` (the structure operators copy into their
+# scope-lock.yaml). Pre-Pass-4 the directive template used three wrong
+# names (`current_rung_title`, `proof_statement`, `forbidden_future_rung_terms`)
+# making a directive-bound run structurally impossible to satisfy
+# without manually re-authoring the directive against the real scope-lock
+# vocabulary. These tests pin the alignment.
+
+
+def test_directive_template_scope_lock_uses_canonical_field_names() -> None:
+    """directive-template.yaml's `preapproved.scope_lock` must use the
+    field names from scope-lock-template.yaml, not the pre-Pass-4 names."""
+    directive = yaml.safe_load(_DIRECTIVE_TEMPLATE.read_text(encoding="utf-8"))
+    scope_lock = directive["preapproved"]["scope_lock"]
+
+    canonical_fields = {
+        "current_rung",
+        "canonical_source",
+        "rung_title",
+        "proves",
+        "required_modules",
+        "allowed_feature_terms",
+        "forbidden_feature_terms_without_replan",
+        "scope_bullets",
+        "exit_criteria",
+        "replan_required_if",
+    }
+    actual_fields = set(scope_lock.keys())
+    assert canonical_fields.issubset(actual_fields), (
+        f"directive-template.yaml preapproved.scope_lock missing canonical fields: "
+        f"{canonical_fields - actual_fields}"
+    )
+
+    # Forbidden pre-Pass-4 field names that would silently fail the
+    # exact-dict comparison against a real scope-lock.yaml.
+    forbidden_fields = {
+        "current_rung_title",  # should be `rung_title`
+        "proof_statement",  # should be `proves`
+        "forbidden_future_rung_terms",  # should be `forbidden_feature_terms_without_replan`
+    }
+    assert not (actual_fields & forbidden_fields), (
+        f"directive-template.yaml uses pre-Pass-4 field names: "
+        f"{actual_fields & forbidden_fields}"
+    )
+
+
+def test_directive_template_scope_lock_fields_match_scope_lock_template() -> None:
+    """The directive's preapproved.scope_lock must include every top-level
+    field declared in scope-lock-template.yaml. Drift here means a
+    directive authored from the template can never satisfy
+    `compare_preapproved` against a scope-lock.yaml copied from the
+    other template."""
+    directive = yaml.safe_load(_DIRECTIVE_TEMPLATE.read_text(encoding="utf-8"))
+    scope_lock_template = yaml.safe_load(_SCOPE_LOCK_TEMPLATE.read_text(encoding="utf-8"))
+
+    directive_keys = set(directive["preapproved"]["scope_lock"].keys())
+    scope_lock_keys = set(scope_lock_template.keys())
+
+    missing_from_directive = scope_lock_keys - directive_keys
+    assert not missing_from_directive, (
+        f"directive-template missing fields present in scope-lock-template: "
+        f"{missing_from_directive}"
+    )
+
+
+def test_directive_template_mirror_matches_top_level() -> None:
+    """The scaffold mirror under skills/pipeline-init/.../pipelines/
+    directive-template.yaml must agree with the top-level template on
+    `preapproved.scope_lock` field names. pipeline-init copies the mirror
+    into operator projects; drift here means new projects get the
+    pre-Pass-4 broken field names."""
+    top_level = yaml.safe_load(_DIRECTIVE_TEMPLATE.read_text(encoding="utf-8"))
+    mirror = yaml.safe_load(_DIRECTIVE_TEMPLATE_MIRROR.read_text(encoding="utf-8"))
+
+    top_keys = set(top_level["preapproved"]["scope_lock"].keys())
+    mirror_keys = set(mirror["preapproved"]["scope_lock"].keys())
+
+    assert top_keys == mirror_keys, (
+        f"directive-template mirror diverges from top-level "
+        f"preapproved.scope_lock keys: "
+        f"only in top-level: {top_keys - mirror_keys}; "
+        f"only in mirror: {mirror_keys - top_keys}"
+    )
