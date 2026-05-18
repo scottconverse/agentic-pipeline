@@ -7,6 +7,18 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — audit Pass 13 (Cluster L + M) — control-loop smoke tests + Python launcher doc
+
+Two threads in one pass:
+
+**TEST-001 (Critical, partial close):** the five v2.0 control-loop scripts (`check_pipeline_control_loop.py`, `stop_validator.py`, `final_response_gate.py`, `pipeline_continue.py`, `agent_decision_gate.py`) had zero direct test coverage. They were exercised transitively by the hooks tests but a regression in their public surface would not have been caught at the unit layer.
+
+- New file `tests/test_control_loop_smoke.py` with 10 smoke tests covering: `parse_control_state` + `validate_control_state` happy path + two specific failure modes; `stop_validator.discover_state_files` + `active_state_files` filter; `final_response_gate.evaluate_final_response_gate` empty + blocked cases; `pipeline_continue.next_action` import-only smoke; `agent_decision_gate` import-only smoke. Comprehensive coverage is still a future sprint; this is the floor.
+
+**QA-012 (Minor):** `hooks/hooks.json` invokes `python …` (the Windows-default binary name). On macOS and many Linux distros the binary is `python3` and `python` is unset; the hook layer silently no-ops. The binary name itself isn't trivially switchable (changing to `python3` would break Windows). Added a USER-MANUAL troubleshooting entry naming the symptom and giving the launcher-shim workaround (`ln -s "$(which python3)" ~/.local/bin/python` or `apt install python-is-python3`). Long-term fix (auto-detect or platform-aware hooks.json) deferred to a follow-up.
+
+Tests: 270 passed (+10 new), 1 skipped.
+
 ### Added — audit Pass 12 (Cluster K) — intake protection bridge (warn-not-block)
 
 ENG-009 / UX-006 / QA-004 / QA-010: the `intake` skill drafted manifest + scope-lock + intake.md under `.agent-runs/<run-id>/` but did not write an `active-control-state.md`. Result: `discover_active_runs()` saw zero active runs, the hook layer ran no scope guards, and the operator got zero signal that a run was staged. The other extreme (auto-creating `active_run: true`) would have been the wrong fix — the manifest is mid-draft and shouldn't auto-deny on `allowed_paths` violations against scope the operator hasn't finalized yet.

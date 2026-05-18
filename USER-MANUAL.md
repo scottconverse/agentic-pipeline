@@ -366,6 +366,20 @@ Read the artifact named in the log line. Most failures cite the policy check tha
 
 Read `auto-promote-report.md`. It cites the failing condition(s). Common: critic findings > 0, verifier open items > 0, tests didn't run, judge log shows blocked actions. Address the cited condition(s) and re-run.
 
+### Hooks silently fail on macOS or Linux (no Python launcher)
+
+`hooks/hooks.json` invokes `python ...` (the Windows-default binary name). On macOS and many Linux distributions the binary is `python3` and `python` is unset. Symptoms: SessionStart loads no run context, scope guards never fire, memory writes don't happen, and Cowork doesn't surface hook errors aggressively.
+
+Workaround: create a `python` shim on PATH pointing at your `python3` binary. On macOS:
+
+```bash
+mkdir -p ~/.local/bin
+ln -s "$(which python3)" ~/.local/bin/python
+# add ~/.local/bin to PATH in your shell rc
+```
+
+On Linux distributions where `python` isn't installed by the distro python package, `apt install python-is-python3` (Debian/Ubuntu) accomplishes the same thing. A future plugin release may auto-detect or split hooks.json per platform; for now the launcher convention is the operator's responsibility.
+
 ## Glossary
 
 - **Manifest** — the per-run scope contract. YAML at `.agent-runs/<run-id>/manifest.yaml`. Drafted from your project's spec, gated on chat APPROVE.
