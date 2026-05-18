@@ -283,11 +283,11 @@ That's the whole command. The skill:
 
 ## The three human gates
 
-Each is a chat-message decision moment. Three universal verbs: `APPROVE` to accept, `REPLAN <description>` (or `<description>`) to revise, or — at the manager gate — `BLOCK` to halt.
+Each fires as a one-click `AskUserQuestion` modal. Three universal verbs as modal options: `APPROVE` to accept, `REPLAN` (with optional free-form description in the modal's text field) to revise, or — at the manager gate — `BLOCK` to halt. The v0.5.x chat-text gate was retired in v1.3.0.
 
-1. **Manifest gate** (after the drafter). You review YAML in chat and APPROVE or describe changes. The drafter loops on revision (max 5 cycles before falling back to a hand-edit prompt).
-2. **Plan gate** (after research → plan). You see the planner's plan summary inline + a count of files in the blast radius + a list of open questions. APPROVE or REPLAN.
-3. **Manager gate** (after auto-promote, only when auto-promote did NOT fire). The manager produces a PROMOTE / BLOCK / REPLAN recommendation citing the verifier, drift-detector, and critic findings verbatim. APPROVE / BLOCK / REPLAN.
+1. **Manifest gate** (after the drafter). You review YAML in chat, then click APPROVE in the modal that fires immediately after. Describe changes via REPLAN to loop on revision (max 5 cycles before falling back to a hand-edit prompt).
+2. **Plan gate** (after research → plan). You see the planner's plan summary inline + a count of files in the blast radius + a list of open questions. Click APPROVE or REPLAN in the modal.
+3. **Manager gate** (after auto-promote, only when auto-promote did NOT fire). The manager produces a PROMOTE / BLOCK / REPLAN recommendation citing the verifier, drift-detector, and critic findings verbatim. Click APPROVE / BLOCK / REPLAN in the modal.
 
 When the auto-promote stage's six conditions all pass, the manager gate auto-fires (PROMOTE) and no human prompt appears. The run reports DONE-PROMOTED in its final summary.
 

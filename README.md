@@ -2,7 +2,7 @@
 
 **Ship multi-step Claude Code work that doesn't drift.**
 
-The plugin reads your project's spec, drafts a per-run scope contract from it, and asks you to APPROVE in chat. Then it runs research → plan → execute → verify → critique end-to-end with three human gates, an opt-in real-time judge, and machine-checkable auto-promote.
+The plugin reads your project's spec, drafts a per-run scope contract from it, and asks you to APPROVE in a one-click `AskUserQuestion` modal. Then it runs research → plan → execute → verify → critique end-to-end with three modal human gates, an opt-in real-time judge, and machine-checkable auto-promote.
 
 One namespaced skill. No YAML for you to hand-author.
 
@@ -191,7 +191,7 @@ The `CLAUDE.md` starter is short and includes a `## Pipeline drafter notes` sect
 /agent-pipeline-claude:run "short description of the work"
 ```
 
-That's the whole command. The drafter reads your project, drafts the manifest, shows it in chat. You reply `APPROVE` to start, or describe changes.
+That's the whole command. The drafter reads your project, drafts the manifest, shows it in chat. An `AskUserQuestion` modal fires with `APPROVE` / `Adjust` / `BLOCK` — one click to start, or describe changes via the Adjust option.
 
 ### Other shapes
 
@@ -203,11 +203,11 @@ That's the whole command. The drafter reads your project, drafts the manifest, s
 
 ## The three human gates
 
-Each is a chat-message decision moment. Three universal verbs: `APPROVE` to accept, `REPLAN <description>` (or `<description>`) to revise, or — at the manager gate — `BLOCK` to halt.
+Each fires as a one-click `AskUserQuestion` modal. Three universal verbs as modal options: `APPROVE` to accept, `REPLAN` (with optional free-form description in the modal's text field) to revise, or — at the manager gate — `BLOCK` to halt. v1.3.0 retired the v0.5.x chat-text gate; v2.0 keeps the modal flow and adds the hook layer underneath.
 
-1. **Manifest gate.** The drafted scope contract. You review YAML in chat and APPROVE or describe changes. The drafter loops on revision (max 5 cycles before falling back to a hand-edit prompt).
-2. **Plan gate.** After research → plan, you see the planner's plan summary inline + a count of files in the blast radius + a list of open questions. APPROVE or REPLAN.
-3. **Manager gate.** After everything else completes, the manager produces a PROMOTE / BLOCK / REPLAN recommendation citing the verifier, drift-detector, and critic findings verbatim. APPROVE / BLOCK / REPLAN.
+1. **Manifest gate.** The drafted scope contract. You review YAML in chat, then click APPROVE in the modal that fires immediately after. Describe changes via REPLAN to loop on revision (max 5 cycles before falling back to a hand-edit prompt).
+2. **Plan gate.** After research → plan, you see the planner's plan summary inline + a count of files in the blast radius + a list of open questions. Click APPROVE or REPLAN in the modal.
+3. **Manager gate.** After everything else completes, the manager produces a PROMOTE / BLOCK / REPLAN recommendation citing the verifier, drift-detector, and critic findings verbatim. Click APPROVE / BLOCK / REPLAN in the modal.
 
 When the auto-promote stage's six conditions all pass, the manager gate auto-fires (PROMOTE) and no human prompt appears. The run reports DONE-PROMOTED in its final summary.
 

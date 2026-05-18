@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -377,6 +379,165 @@ def test_landing_page_problem_section_does_not_say_approve_in_chat():
     text = _read(REPO_ROOT / "docs" / "index.html")
     assert "approve in chat" not in text, (
         "landing page still has 'approve in chat' operator-facing copy"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pass 11d regressions: case-insensitive sweep + B1/B2 + role + diagrams
+# ---------------------------------------------------------------------------
+#
+# Pass 11/11b/11c each closed a residue, but each used case-sensitive or
+# narrow phrase matching, so the next iteration of the verifier still
+# found more (`APPROVE in chat`, `operator must type APPROVE`, the
+# manifest-drafter role file, ARCHITECTURE.md Mermaid + sequence
+# diagrams). Pass 11d does a case-INSENSITIVE sweep so the family of
+# variants can't slip past anymore.
+
+import re as _re
+
+# Operator-facing surfaces. These are the docs an operator reads BEFORE
+# running anything — they must describe modal gates, never chat-APPROVE
+# instructions. Historical mentions ("v1.3.0 retired chat-APPROVE",
+# "the chat-APPROVE ceremony was the failure mode") are allowed
+# inside CHANGELOG.md and skill SKILL.md files because they describe
+# what was retired, not how to use the current system.
+_OPERATOR_FACING_FILES = (
+    "README.md",
+    "USER-MANUAL.md",
+    "ARCHITECTURE.md",
+    "docs/index.html",
+    "docs/module-release-handbook.md",
+    "pipelines/roles/manifest-drafter.md",
+    "skills/pipeline-init/references/pipeline-payload/pipelines/roles/manifest-drafter.md",
+)
+
+# Pattern family for the retired chat-APPROVE ceremony. Each pattern is
+# matched case-insensitively. The regex is intentionally narrow — it
+# matches operator INSTRUCTIONS (imperatives or descriptions of what
+# the operator does today), not historical descriptions of what v1.3.0
+# retired.
+_INSTRUCTIONAL_CHAT_APPROVE_PATTERNS = (
+    # "APPROVE in chat" / "approve in chat" / etc.
+    _re.compile(r"\bapprove\s+in\s+chat\b", _re.IGNORECASE),
+    # "chat APPROVE" / "chat-APPROVE" as a noun describing the action.
+    # The historical mentions in CHANGELOG / SKILL.md describe what was
+    # retired, so they're scoped out of this test's file list.
+    _re.compile(r"\bchat[- ]message\s+APPROVE\b", _re.IGNORECASE),
+    # "Reply APPROVE" / "reply with APPROVE" as instructions.
+    _re.compile(r"\breply\s+(?:with\s+)?`?APPROVE`?\s+(?:in\s+chat|to\b)", _re.IGNORECASE),
+    # "type APPROVE" as an instruction.
+    _re.compile(r"\btype\s+`?APPROVE`?\b", _re.IGNORECASE),
+    # "operator must type APPROVE" as a definition.
+    _re.compile(r"\boperator\s+must\s+type\s+APPROVE\b", _re.IGNORECASE),
+    # "you review YAML in chat and APPROVE" as a procedure.
+    _re.compile(r"\bin\s+chat\s+and\s+APPROVE\b", _re.IGNORECASE),
+)
+
+
+# Surrounding-line tokens that mark a match as HISTORICAL (allowed).
+# The patterns above are imperatives or procedural descriptions, but
+# the same phrasing legitimately appears in lines that EXPLAIN what
+# v1.3.0 retired — those are honest history, not operator instructions.
+_HISTORY_MARKERS = (
+    "retired",
+    "v1.3.0 replaced",
+    "v0.5.x",
+    "ceremony",  # "the chat-APPROVE ceremony was the failure mode"
+    "no longer",
+    "previously",
+    "pre-pass-",
+    "was retired",
+    "was wrong",
+    "now wrong",
+)
+
+
+def _is_historical_line(line: str) -> bool:
+    """Return True if the line describes the retired ceremony rather
+    than instructing the operator to use it. The test scoping is
+    intentional: historical mentions ARE allowed in operator-facing
+    docs (they explain why the modal exists), and only instructional
+    or procedural uses count as residue."""
+    lowered = line.lower()
+    return any(marker in lowered for marker in _HISTORY_MARKERS)
+
+
+@pytest.mark.parametrize("filename", _OPERATOR_FACING_FILES)
+def test_no_chat_approve_instructional_residue(filename: str) -> None:
+    """Pass 11d case-insensitive sweep. Operator-facing docs must not
+    instruct the operator to APPROVE via chat. Three prior passes
+    (11, 11b, 11c) closed residues one phrasing at a time; this test
+    catches the family with a case-insensitive regex sweep so the
+    next variant can't sneak in. Historical mentions (lines containing
+    "retired" / "v1.3.0 replaced" / "ceremony" etc.) are intentionally
+    allowed — they describe what was retired, not what to do now."""
+    text = _read(REPO_ROOT / filename)
+    lines = text.splitlines()
+    found: list[str] = []
+    for pattern in _INSTRUCTIONAL_CHAT_APPROVE_PATTERNS:
+        for match in pattern.finditer(text):
+            line_no = text[: match.start()].count("\n") + 1
+            line_text = lines[line_no - 1] if line_no - 1 < len(lines) else ""
+            if _is_historical_line(line_text):
+                continue  # honest history; not an instruction
+            found.append(f"  {filename}:{line_no} → {match.group(0)!r}")
+    assert not found, (
+        f"{filename} contains operator-instructional chat-APPROVE residue:\n"
+        + "\n".join(found)
+        + "\n\nThese should describe the modal gate (`AskUserQuestion`), not "
+        "the retired v0.5.x chat ceremony. v1.3.0 retired chat-APPROVE; "
+        "v2.0 keeps the modal flow. (Lines mentioning 'retired' / 'v0.5.x' / "
+        "'ceremony' are scoped out — they're honest history.)"
+    )
+
+
+def test_readme_tagline_describes_modal():
+    """B1 from end-sprint audit-lite verifier: README.md:5 used to say
+    'asks you to APPROVE in chat'. Must describe the modal."""
+    text = _read(REPO_ROOT / "README.md")
+    assert "APPROVE in chat" not in text  # case-sensitive check for the specific phrase
+    assert "AskUserQuestion" in text, "README tagline should name AskUserQuestion"
+
+
+def test_architecture_glossary_gate_describes_modal():
+    """B2 from end-sprint audit-lite verifier: ARCHITECTURE.md:856 used
+    to say 'operator must type APPROVE'. Must describe the modal."""
+    text = _read(REPO_ROOT / "ARCHITECTURE.md")
+    assert "operator must type APPROVE" not in text
+    # Sanity: confirm the modal description landed.
+    assert "operator clicks APPROVE / REPLAN / BLOCK" in text or \
+           "AskUserQuestion" in text
+
+
+def test_manifest_drafter_role_describes_modal():
+    """Pass 11d found that manifest-drafter.md (and its mirror) still
+    instructed the drafter that the operator 'replies APPROVE'. The
+    drafter must understand the operator clicks a modal option."""
+    for path in (
+        REPO_ROOT / "pipelines" / "roles" / "manifest-drafter.md",
+        REPO_ROOT / "skills" / "pipeline-init" / "references" / "pipeline-payload"
+        / "pipelines" / "roles" / "manifest-drafter.md",
+    ):
+        text = _read(path)
+        # The role file must not instruct the drafter to expect chat-text
+        # responses from the operator.
+        assert "replies `APPROVE`" not in text, (
+            f"{path.name} still says the operator replies APPROVE in chat"
+        )
+        # Must name the modal mechanism.
+        assert "AskUserQuestion" in text or "modal" in text.lower(), (
+            f"{path.name} must describe the modal gate"
+        )
+
+
+def test_architecture_diagrams_describe_modal_gates():
+    """ARCHITECTURE.md Mermaid flowchart (line ~189) and sequence
+    diagram (line ~298) used to label gates as `chat-message APPROVE`.
+    Update to `modal AskUserQuestion` or equivalent so the diagram
+    matches code."""
+    text = _read(REPO_ROOT / "ARCHITECTURE.md")
+    assert "chat-message APPROVE" not in text, (
+        "ARCHITECTURE.md diagram still labels gates as chat-message APPROVE"
     )
 
 

@@ -186,7 +186,7 @@ fresh subagent per stage.
 ```mermaid
 flowchart TB
     Start([User runs /run &quot;short description&quot;]) --> D[manifest-drafter<br/>role: pre-stage subagent<br/>reads project spec/release-plan/scope-lock]
-    D -- draft --> M[manifest gate<br/>role: human<br/>chat-message APPROVE]
+    D -- draft --> M[manifest gate<br/>role: human<br/>modal AskUserQuestion: APPROVE / REPLAN / BLOCK]
     M -- APPROVE --> R[research<br/>role: researcher<br/>artifact: research.md]
     R --> P[plan<br/>role: planner<br/>artifact: plan.md]
     P -- APPROVE --> TW[test-write<br/>role: test-writer<br/>artifact: failing-tests-report.md]
@@ -295,9 +295,8 @@ sequenceDiagram
     O->>FS: write manifest.yaml skeleton
     O-->>U: drafter walks project; shows drafted manifest in chat
     U->>FS: edit manifest.yaml
-    U->>O: APPROVE  (chat-message reply continues the same /run invocation)
-    O->>U: AskUserQuestion: APPROVE manifest?
-    U->>O: APPROVE
+    O->>U: AskUserQuestion: APPROVE manifest? (v1.3.0+ modal; v0.5.x chat-text gate retired)
+    U->>O: APPROVE  (one click on the modal option)
     O->>FS: append run.log: manifest COMPLETE
 
     Note over U,FS: GATE 2 — plan
@@ -853,8 +852,10 @@ sequenceDiagram
 - **Artifact** — the single named file a stage produces, written into
   `.agent-runs/<run-id>/`.
 - **Gate** — a checkpoint where the pipeline halts. Either
-  `human_approval` (operator must type APPROVE) or implicit (a failing
-  policy check or empty artifact).
+  `human_approval` (operator clicks APPROVE / REPLAN / BLOCK in an
+  `AskUserQuestion` modal — v1.3.0 retired the v0.5.x "type APPROVE
+  in chat" ceremony) or implicit (a failing policy check or empty
+  artifact).
 - **Subagent** — a fresh Claude Code agent spawned by the orchestrator
   for a single stage. Has no memory of the orchestrator's session.
 - **Run ID** — `YYYY-MM-DD-<slug>`, the directory name under

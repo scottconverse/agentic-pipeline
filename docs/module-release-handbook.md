@@ -87,7 +87,7 @@ See `pipelines/roles/local-rehearsal.md`.
 
 The manifest-drafter detects the "release" keyword in your description and selects the `module-release` pipeline automatically. It then walks the module's existing artifacts (module README, CivicSuite spec, release-lockstep config, downstream pins) and drafts the full manifest including the release-specific fields (`module.*`, `release.type`, `release.expected_artifacts`, etc.) for your review.
 
-You reply `APPROVE` in chat once the drafted manifest matches your intent. The orchestrator runs the four-phase pipeline.
+You click `APPROVE` in the modal that fires once the drafted manifest matches your intent. The orchestrator runs the four-phase pipeline.
 
 #### v0.5.x way (deprecated; works in v1.0 via shim, removed at v1.1)
 
