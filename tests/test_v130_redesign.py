@@ -211,6 +211,117 @@ def test_pipeline_init_procedure_uses_modal_gates():
 
 
 # ---------------------------------------------------------------------------
+# Pass 11 regressions: doc staleness sweep
+# ---------------------------------------------------------------------------
+#
+# Pre-Pass-11 the user-facing docs (README, USER-MANUAL, ARCHITECTURE,
+# tests/README, docs/VERIFICATION, docs/index.html) referenced the v1.x
+# version literals and the retired "Reply APPROVE" chat ceremony.
+# Operators reading the docs got a different mental model than what the
+# code actually did. These tests pin the post-Pass-11 invariants.
+
+
+def test_readme_does_not_instruct_reply_approve_to_start():
+    """README's quick-start must not say `Reply APPROVE to start`. The
+    real flow is: read the orientation summary in chat, then click the
+    APPROVE modal that follows (Pass 5 / Cluster E aligns pipeline-init
+    + run skill on modal gates)."""
+    text = _read(REPO_ROOT / "README.md")
+    assert "Reply APPROVE to start" not in text
+
+
+def test_readme_upgrade_instruction_targets_v2():
+    """README's migration section must direct upgraders at the current
+    tag, not the stale v1.1.0 instruction."""
+    text = _read(REPO_ROOT / "README.md")
+    assert "git checkout v1.1.0" not in text, (
+        "README still tells operators to `git checkout v1.1.0` — stale"
+    )
+    assert "git checkout v2.0.0" in text
+
+
+def test_user_manual_upgrade_instruction_targets_v2():
+    """USER-MANUAL's upgrade snippet must match the README upgrade
+    snippet (same instruction in both surfaces)."""
+    text = _read(REPO_ROOT / "USER-MANUAL.md")
+    assert "git checkout v1.1.0" not in text
+    assert "git checkout v2.0.0" in text
+
+
+def test_architecture_current_version_is_v2():
+    """ARCHITECTURE.md must declare the current version as v2.0+. The
+    v1.x stage architecture is still described below the version line
+    (v2.0 rides on top of it); only the active-version label updates."""
+    text = _read(REPO_ROOT / "ARCHITECTURE.md")
+    assert "**Current version: v1.1.0.**" not in text, (
+        "ARCHITECTURE still claims Current version: v1.1.0"
+    )
+    assert "**Current version: v2.0.0.**" in text
+
+
+def test_tests_readme_version_label_is_v2():
+    text = _read(REPO_ROOT / "tests" / "README.md")
+    assert "v1.1.0+" not in text
+    assert "v2.0.0+" in text
+
+
+def test_landing_page_version_badge_is_v2():
+    """docs/index.html badge / eyebrow must show v2.0.x, not v1.1.0."""
+    text = _read(REPO_ROOT / "docs" / "index.html")
+    assert ">v1.1.0<" not in text, "landing page badge still says v1.1.0"
+    assert "v2.0.0" in text
+
+
+def test_manifest_template_documents_v2_optional_gates():
+    """manifest-template.yaml must mention the v2.0 conditional gates
+    (directive_bound / scope_lock_authority / execute_readiness) in the
+    required_gates comment block so operators know they exist (ENG-010)."""
+    for path in (
+        REPO_ROOT / "pipelines" / "manifest-template.yaml",
+        REPO_ROOT / "skills" / "pipeline-init" / "references" / "pipeline-payload"
+        / "pipelines" / "manifest-template.yaml",
+    ):
+        text = _read(path)
+        for needle in ("directive_bound", "scope_lock_authority", "execute_readiness"):
+            assert needle in text, (
+                f"{path.name} missing v2.0 gate hint `{needle}`"
+            )
+
+
+def test_directive_template_uses_placeholder_author_and_reference():
+    """directive-template.yaml ships placeholder strings the operator
+    must replace before binding. Pre-Pass-11 the template hard-coded
+    `Scott Converse` and `docs/design/example.md`, which would have
+    been baked into any directive copied from it. Now they're explicit
+    placeholders."""
+    for path in (
+        REPO_ROOT / "pipelines" / "directive-template.yaml",
+        REPO_ROOT / "skills" / "pipeline-init" / "references" / "pipeline-payload"
+        / "pipelines" / "directive-template.yaml",
+    ):
+        text = _read(path)
+        assert "Scott Converse" not in text, (
+            f"{path.name} still hard-codes `Scott Converse` as the author"
+        )
+        assert "docs/design/example.md" not in text, (
+            f"{path.name} still hard-codes `docs/design/example.md` as authority.reference"
+        )
+        assert "<your-name-or-team>" in text
+        assert "<path/to/design-doc-or-pr-or-issue>" in text
+
+
+def test_check_manifest_schema_error_does_not_mention_chat_approve():
+    """check_manifest_schema's gate_policy suggestion string must not
+    cite the retired chat-APPROVE ceremony. Pre-Pass-11 the suggestion
+    told operators `three gates require chat-APPROVE` which contradicted
+    the v1.3.0 modal redesign."""
+    text = _read(REPO_ROOT / "scripts" / "check_manifest_schema.py")
+    assert "chat-APPROVE" not in text, (
+        "check_manifest_schema still cites chat-APPROVE in an error string"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Version pin
 # ---------------------------------------------------------------------------
 

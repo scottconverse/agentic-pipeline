@@ -395,7 +395,7 @@ To upgrade:
 ```
 cd ~/.claude/plugins/marketplaces/agent-pipeline-claude
 git pull
-git checkout v1.1.0
+git checkout v2.0.0
 ```
 
 Then fully quit and reopen Cowork.

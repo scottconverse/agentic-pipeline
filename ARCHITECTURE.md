@@ -94,12 +94,12 @@ All PR #5 amendments from the codex side are present:
 
 ---
 
-# v1.x Architecture (preserved unchanged)
+# v1.x Architecture (preserved through v2.0)
 
 How the agent-pipeline-claude plugin is organized, what runs where, and which
 artifact each stage produces.
 
-**Current version: v1.1.0.** v1.1 fixes the install/runtime adapter that v1.0.0–v1.0.2 got wrong (one layout, namespaced invocation, validating marketplace manifest, self-contained skills) without changing pipeline behavior. v1.0 rebuilt the user-facing surface around four load-bearing decisions (Cowork-first, spec-aware drafting, one slash skill, chat-native gates) while preserving every v0.5 hardening mechanism intact. This document describes the v1.1 architecture; v0.5 stage names are referenced where the current flow is a thin orchestration change over a preserved mechanism.
+**Current version: v2.0.0.** v2.0 ("heavier-hand") adds three layers on top of the v1.3.x architecture documented below — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval with bind-after-conformance, and a Mem0 cross-session memory layer — without removing any of the v1.x gates. v1.3.x replaced the chat-APPROVE ceremony with `AskUserQuestion` modal prompts (one click each) for the three human gates (manifest, plan, manager). v1.1 fixed the install/runtime adapter that v1.0.0–v1.0.2 got wrong (one layout, namespaced invocation, validating marketplace manifest, self-contained skills) without changing pipeline behavior. v1.0 rebuilt the user-facing surface around four load-bearing decisions (Cowork-first, spec-aware drafting, one slash skill, chat-native gates) while preserving every v0.5 hardening mechanism intact. This document describes the v1.x stage architecture that v2.0 still rides on top of; the v2.0 hook/memory/directive layers are detailed in the v2.0 CHANGELOG entry.
 
 This document is for two audiences:
 

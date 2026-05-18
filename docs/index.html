@@ -164,12 +164,12 @@ footer a { color: var(--fg-muted); }
 <div class="wrap">
 
 <header>
-  <div class="eyebrow">Claude Code plugin · v1.1.0</div>
+  <div class="eyebrow">Claude Code plugin · v2.0.0</div>
   <h1>Multi-step Claude Code work without drift.</h1>
-  <p class="tagline">One slash command. Drafted scope contracts from your project's spec. Research → plan → execute → verify → critique runs end-to-end with three human gates, an opt-in real-time judge, and machine-checkable auto-promote.</p>
+  <p class="tagline">One slash command. Drafted scope contracts from your project's spec. Research → plan → execute → verify → critique runs end-to-end with three modal human gates, eleven Cowork lifecycle hooks, persistent file-backed run memory + Mem0 cross-session bridge, directive-contract pre-approval, scope-lock authority, and machine-checkable auto-promote.</p>
   <div class="badges">
-    <span class="badge version">v1.1.0</span>
-    <span class="badge tests">15/15 tests passing</span>
+    <span class="badge version">v2.0.0</span>
+    <span class="badge tests">all tests green</span>
     <span class="badge">cleanroom-verified</span>
     <span class="badge">Apache-2.0</span>
   </div>
@@ -260,7 +260,7 @@ manager           →  manager-decision.md     →  [gate 3: chat APPROVE]</div>
       <tr><td><strong>End-to-end</strong></td><td>Full <code>/run</code> orchestrates research → … → manager against a fixture</td><td>minutes</td><td class="cost">~$2/run Haiku<br>~$15/run Sonnet</td><td>tags + nightly</td></tr>
     </tbody>
   </table>
-  <p>15/15 tests pass on v1.1.0. The cleanroom tier (<a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/tests/test_cleanroom_install.py">tests/test_cleanroom_install.py</a>) is the layer that catches the v1.0.0-class regression — manifest valid in isolation but the install layout broken — that the earlier suite missed.</p>
+  <p>All tests pass on v2.0.0 (see <a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/CHANGELOG.md">CHANGELOG.md</a> for the current count). The cleanroom tier (<a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/tests/test_cleanroom_install.py">tests/test_cleanroom_install.py</a>) is the layer that catches the v1.0.0-class regression — manifest valid in isolation but the install layout broken — that the earlier suite missed.</p>
   <p>Full taxonomy + reproducer: <a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/tests/README.md">tests/README.md</a>.</p>
 </section>
 
@@ -277,7 +277,7 @@ manager           →  manager-decision.md     →  [gate 3: chat APPROVE]</div>
       <tr><td><strong>Chat</strong></td><td class="no">✗ (no shell)</td><td class="no">✗</td><td class="no">✗</td></tr>
     </tbody>
   </table>
-  <p>This plugin has no SessionStart/SessionEnd/Stop hooks — it's skill-only, which means it loads identically across Code and Cowork-VM tabs. (Some other Claude Code plugins use hooks and hit the Cowork-VM-tab hook bug <a href="https://github.com/anthropics/claude-code/issues/27398">#27398</a>; this plugin doesn't depend on hooks at all.)</p>
+  <p><strong>v2.0 ships an eleven-event Cowork lifecycle hook layer</strong> (SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, SubagentStop, Stop, SessionEnd). Hooks load automatically and write persistent run memory into <code>.agent-runs/&lt;run-id&gt;/memory/</code> so context survives compaction and session resume. Earlier v1.x docs noted this plugin was hook-free — that changed with v2.0.</p>
 </section>
 
 <section>
@@ -291,12 +291,13 @@ manager           →  manager-decision.md     →  [gate 3: chat APPROVE]</div>
 </section>
 
 <section>
-  <h2>What changed in v1.1.0</h2>
+  <h2>What changed in v2.0.0</h2>
   <ul>
-    <li><strong>Skills are self-contained.</strong> All pipeline payload (role files, templates, policy scripts) is now bundled under <code>skills/pipeline-init/references/pipeline-payload/</code>. The plugin no longer relies on repo-root paths after Cowork copies a plugin into its cache — fixing a v1.0.x regression where install layouts diverged.</li>
-    <li><strong>Deepened packaging check.</strong> <code>scripts/check_skill_packaging.py</code> now recursively scans every <code>*.md</code> under each skill folder (not just SKILL.md). Discriminating regex flags plugin-owned paths while skipping legitimate consumer-project paths (<code>docs/</code>, <code>tests/</code>, <code>CLAUDE.md</code>) and bundled-payload templates.</li>
-    <li><strong>Automated cleanroom test.</strong> <code>tests/test_cleanroom_install.py</code> exercises a fresh copy via <code>claude --plugin-dir &lt;copy&gt;</code> on every commit. Catches install-layout regressions the unit-test layer would miss.</li>
-    <li><strong>Five-tier testing taxonomy.</strong> Static / Unit / Smoke / Cleanroom / E2E documented in <a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/tests/README.md">tests/README.md</a>.</li>
+    <li><strong>Eleven-event Cowork lifecycle hook layer.</strong> SessionStart / UserPromptSubmit / PreToolUse / PermissionRequest / PostToolUse / PostToolUseFailure / PreCompact / PostCompact / SubagentStop / Stop / SessionEnd. Records persistent run memory; re-injects <code>handoff_current.md</code> after context compaction.</li>
+    <li><strong>Persistent file-backed run memory.</strong> <code>.agent-runs/&lt;run-id&gt;/memory/</code> with events / turns / decisions / open_loops / probe / handoff_current. Layer A is unconditional (always written); Layer B (Mem0 OSS or platform) is best-effort behind a circuit breaker.</li>
+    <li><strong>Directive contracts.</strong> Pre-approved manifest + scope-lock + acceptance assertions in <code>.agent-runs/&lt;id&gt;/directive.yaml</code> let a run auto-approve manifest/plan gates when content is byte-identical. SHA-256 hash bound at conformance; exit-3 on resume-time divergence.</li>
+    <li><strong>Scope-lock authority.</strong> <code>scripts/check_scope_lock.py</code> + <code>check_rung_file_ownership.py</code> + <code>check_release_docs_consistency.py</code> validate edited paths, commit messages, and doc claims against the canonical release-plan rung.</li>
+    <li><strong>v1.3.0 surface preserved.</strong> Modal gates (<code>AskUserQuestion</code>) for manifest / plan / manager. No grant files, no autonomous-mode token. Evidence-driven auto-promote stays the path to hands-off.</li>
   </ul>
   <p>Full release notes: <a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -314,7 +315,7 @@ manager           →  manager-decision.md     →  [gate 3: chat APPROVE]</div>
 </section>
 
 <footer>
-  <p>By <a href="https://github.com/scottconverse">Scott Converse</a>. Apache-2.0 licensed. v1.1.0 released 2026-05-12.</p>
+  <p>By <a href="https://github.com/scottconverse">Scott Converse</a>. Apache-2.0 licensed. v2.0.0 released 2026-05-18.</p>
   <p>
     <a href="https://github.com/scottconverse/agent-pipeline-claude">Repo</a> ·
     <a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/USER-MANUAL.md">Manual</a> ·

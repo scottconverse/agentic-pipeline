@@ -7,6 +7,23 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — audit Pass 11 (Cluster J + ENG-010) — doc staleness sweep + manifest-template v2.0 gates
+
+Pre-Pass-11 the user-facing docs claimed v1.1.0 / v1.1.1 in version labels, told operators to type `Reply APPROVE to start` in chat (retired by v1.3.0), pointed upgraders at `git checkout v1.1.0`, and left the manifest-template's `required_gates` list silent on the three v2.0 conditional gates (ENG-010). Operators reading the docs got a different mental model than what the code actually did.
+
+- `CHANGELOG.md` v2.0.0 entry: corrected the "171 tests" claim to the real count at HEAD `9634929` (191). Pre-fix-loop tests = 191, not 171; the audit caught this drift.
+- `README.md`: replaced `Reply APPROVE to start` with the modal flow description; replaced v1.1.0 in the migration-section upgrade snippet with v2.0.0; replaced the v0.5.x-to-v2.0 migration note's "chat messages (APPROVE / REPLAN / BLOCK)" with the modal description.
+- `USER-MANUAL.md`: upgrade snippet now targets v2.0.0.
+- `ARCHITECTURE.md`: "Current version" label now v2.0.0, with a paragraph describing what v2.0 added on top of the v1.x stage architecture (hooks, memory, directive contracts) that the doc still describes.
+- `tests/README.md` and `docs/VERIFICATION.md`: version labels updated; the v1.1.1 narrative is preserved as historical baseline with a pointer to CHANGELOG for current test count.
+- `docs/index.html`: eyebrow / badge / footer all updated to v2.0.0; "What changed in v1.1.0" section rewritten as "What changed in v2.0.0" listing hooks, persistent memory, directive contracts, scope-lock authority, and the preserved v1.3.0 modal-gate surface; the "no hooks" honest-caveat paragraph rewritten to describe the new hook layer (the prior claim is now wrong).
+- `scripts/check_manifest_schema.py`: gate_policy violation suggestion no longer cites "chat-APPROVE" — it now tells operators the field is retired and to remove it.
+- `pipelines/directive-template.yaml` and `skills/pipeline-init/.../pipelines/directive-template.yaml` (mirror): `author.name` and `authority.reference` replaced hardcoded `"Scott Converse"` / `"docs/design/example.md"` with placeholder strings (`<your-name-or-team>`, `<path/to/design-doc-or-pr-or-issue>`). Operators copying the template no longer inherit the maintainer's name as the directive author by accident.
+- `pipelines/manifest-template.yaml` and the mirror (ENG-010): added a comment block listing the three v2.0 conditional gates (`directive_bound`, `scope_lock_authority`, `execute_readiness`) and three commented-out gate lines that operators can uncomment when they author the matching artifact (directive.yaml / scope-lock.yaml / implementation-report.md). Conditional-skip via run_all.py's `CHECK_PREREQUISITES` table keeps v1.x runs unaffected.
+- 9 new regression tests in `tests/test_v130_redesign.py` pinning: README has no "Reply APPROVE to start" / "git checkout v1.1.0"; USER-MANUAL upgrade snippet targets v2.0.0; ARCHITECTURE Current version is v2.0.0; tests/README and docs/index.html version labels are v2.0+; manifest-template documents the three v2.0 conditional gates (both top-level + mirror); directive-template uses placeholder author/reference (both top-level + mirror); check_manifest_schema.py error string contains no `chat-APPROVE`.
+
+**Doc consistency invariant:** every claim in user-facing docs about "what version this is" and "how the gates work" now matches the code. Pre-Pass-11 was a worst-of-both-worlds: docs sold v1.x ceremony while code ran v2.0 hooks + modal gates.
+
 ### Fixed — audit Pass 10 (Cluster I) — contract-artifact warning only on writes
 
 ENG-006 / UX-005: `classify_tool_risk` and `tool_failure_context` emitted "pipeline contract artifact touched" on any tool invocation whose `tool_input` mentioned `manifest.yaml` / `directive.yaml` / `scope-lock.yaml` — including reads (`cat manifest.yaml`, `grep -n goal manifest.yaml`, `Read` tool on the file). Operators got the noisy warning every time they inspected the contract — which is the safe, encouraged behavior. The Phase 6.c fix had only split block-on-failure vs warn-on-success; the false-positive on reads stayed.
@@ -129,7 +146,7 @@ The Phase 6.c verification round fixed `show_run_status.py` to honor `CLAUDE_PRO
 
 **Heavier-hand redesign.** Takes the opposite direction from PR #22 (closed 2026-05-17) which collapsed gates and removed enforcement. v2.0 keeps the gates and adds enforcement everywhere — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval, scope-lock authority, intake skill, persistent file-backed run memory, and an MCP Mem0 layer for cross-session continuity. Codex stays lighter; claude takes the heavier hand because Claude historically loses focus mid-run and the runtime needs to catch it.
 
-171 tests, 1 skipped (cleanroom_e2e), all green. Branch `v2.0-heavier-hand`.
+191 tests, 1 skipped (cleanroom_e2e), all green at HEAD `9634929`. Branch `v2.0-heavier-hand`. (The audit Pass 11 sweep corrected this number from a stale "171" — the actual count at the v2.0.0 commit was 191.)
 
 ### Added — Phase 1: foundation policy ports (from agent-pipeline-codex v0.9.0)
 

@@ -60,10 +60,10 @@ pipeline_run:
   ...
 ```
 
-Reply APPROVE to start, or describe what to change.
+Use the APPROVE / Adjust modal that appears next, or describe what to change.
 ```
 
-You read it, reply `APPROVE`, and the pipeline runs. Three human gates along the way (manifest, plan, manager-decision), each in chat. The last one auto-fires when six machine-checkable conditions pass. Final result lands in `.agent-runs/<run-id>/` as a structured paper trail.
+You read the orientation summary in chat, then click APPROVE in the modal that fires immediately after. The pipeline runs. Three human gates along the way (manifest, plan, manager-decision), each a one-click `AskUserQuestion` modal. The last one auto-fires when the six machine-checkable conditions pass. Final result lands in `.agent-runs/<run-id>/` as a structured paper trail.
 
 That's it. No two-step new-run + run-pipeline. No blank YAML to fill in.
 
@@ -323,9 +323,9 @@ If you skipped v1.0 and are upgrading directly from v0.5.x:
 
 - `/new-run` + `/run-pipeline` two-step is gone. Use `/agent-pipeline-claude:run "<description>"`.
 - Manifest is drafted from your project's spec; you no longer hand-author 11 fields from blank.
-- All three human gates are chat messages (APPROVE / REPLAN / BLOCK), not modal popups.
+- All three human gates are `AskUserQuestion` modal prompts (APPROVE / REPLAN / BLOCK as labels — one click each). The v0.5.x free-form chat-APPROVE ceremony was retired in v1.3.0.
 
-Run `cd ~/.claude/plugins/marketplaces/agent-pipeline-claude && git pull && git checkout v1.1.0` to upgrade, then fully restart Cowork. See [CHANGELOG.md](CHANGELOG.md) for full migration notes.
+Run `cd ~/.claude/plugins/marketplaces/agent-pipeline-claude && git pull && git checkout v2.0.0` to upgrade, then fully restart Cowork. See [CHANGELOG.md](CHANGELOG.md) for full migration notes.
 
 ## Contributing
 

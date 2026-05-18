@@ -10,15 +10,20 @@ version: 1
 content_hash: ""
 
 author:
-  # Human or team that pre-approved this directive contract.
-  name: "Scott Converse"
-  email: ""
+  # Human or team that pre-approved this directive contract. Edit
+  # before tagging the directive — the conformance check binds the
+  # author name into run.log as part of the audit trail.
+  name: "<your-name-or-team>"
+  email: "<your-email>"
 
 authority:
   # One of: pr_url, design_doc, issue, operator_signature, release_directive.
   type: "design_doc"
   # URL, absolute path, issue id, or pasted signature reference.
-  reference: "docs/design/example.md"
+  # Replace with the actual authority artifact path before binding —
+  # the placeholder below is a sentinel that will fail under any real
+  # acceptance.manager check that grep's for it.
+  reference: "<path/to/design-doc-or-pr-or-issue>"
 
 preapproved:
   # Must exactly match .agent-runs/<run-id>/manifest.yaml after YAML parsing.
