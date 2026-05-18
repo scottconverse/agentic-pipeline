@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-pipeline-claude.dev/schemas/mem0.config.v1.json",
+  "title": "Mem0 memory layer configuration (v1)",
+  "type": "object",
+  "required": ["mode"],
+  "properties": {
+    "mode": {"enum": ["platform", "oss"], "description": "platform=managed mem0.ai; oss=self-hosted via docker compose"},
+    "project": {"type": "string", "default": "default"},
+    "platform": {
+      "type": "object",
+      "properties": {
+        "api_key_env": {"type": "string", "default": "MEM0_API_KEY"},
+        "endpoint": {"type": "string", "default": "https://api.mem0.ai"},
+        "mcp_endpoint": {"type": "string", "default": "https://mcp.mem0.ai/mcp/"}
+      }
+    },
+    "oss": {
+      "type": "object",
+      "properties": {
+        "base_url": {"type": "string", "default": "http://localhost:3000"},
+        "compose_dir": {"type": "string", "default": "./vendor/mem0/server"},
+        "admin_api_key_env": {"type": "string", "default": "MEM0_ADMIN_API_KEY"}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "properties": {
+        "user_id_strategy": {"enum": ["hash_git_email"]},
+        "agent_id": {"type": "string", "default": "claude-code"},
+        "app_id_strategy": {"enum": ["slug_git_remote"]},
+        "run_id_strategy": {"enum": ["branch_sha_epoch"]}
+      }
+    },
+    "retrieval": {
+      "type": "object",
+      "properties": {
+        "top_k": {"type": "integer", "minimum": 1, "default": 10},
+        "token_budget": {"type": "integer", "minimum": 1, "default": 1200},
+        "session_start_overflow": {"type": "number", "default": 1.5},
+        "enable_prompt_injection": {"type": "boolean", "default": true},
+        "min_prompt_chars": {"type": "integer", "minimum": 0, "default": 20},
+        "latency_budget_ms": {
+          "type": "object",
+          "properties": {
+            "p50": {"type": "integer", "default": 150},
+            "p95": {"type": "integer", "default": 400},
+            "session_start": {"type": "integer", "default": 1500}
+          }
+        }
+      }
+    },
+    "writes": {
+      "type": "object",
+      "properties": {
+        "allowed_types": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "decision",
+              "task_learning",
+              "anti_pattern",
+              "user_preference",
+              "environmental",
+              "convention",
+              "session_state"
+            ]
+          },
+          "default": [
+            "decision",
+            "task_learning",
+            "anti_pattern",
+            "user_preference",
+            "environmental",
+            "convention",
+            "session_state"
+          ]
+        },
+        "agent_can_delete": {"type": "boolean", "default": false},
+        "agent_can_update": {"type": "boolean", "default": true}
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "properties": {
+        "secret_patterns": {"type": "array", "items": {"type": "string"}},
+        "block_paths": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "hygiene": {
+      "type": "object",
+      "properties": {
+        "prune_run_id_after_days": {"type": "integer", "default": 7},
+        "prune_session_state_after_days": {"type": "integer", "default": 30},
+        "review_long_lived_after_days": {"type": "integer", "default": 180}
+      }
+    },
+    "circuit_breaker": {
+      "type": "object",
+      "properties": {
+        "consecutive_failures": {"type": "integer", "default": 5},
+        "open_seconds": {"type": "integer", "default": 300}
+      }
+    },
+    "consent": {
+      "type": "object",
+      "properties": {
+        "platform_requires_consent": {"type": "boolean", "default": true},
+        "consent_file": {"type": "string", "default": ".mem0/consent.json"}
+      }
+    }
+  }
+}
