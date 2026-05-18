@@ -1,0 +1,6 @@
+# Vendor directory: third-party source cloned on demand by the plugin.
+# Pinned to a specific commit by scripts/mem0_bootstrap.py; tracked at
+# install time, not in this repo, so we don't bloat the plugin payload.
+*
+!.gitignore
+!VENDOR_PINS.md

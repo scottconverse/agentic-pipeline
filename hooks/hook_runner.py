@@ -241,11 +241,18 @@ def handle_stop(event: dict) -> int:
 
 
 def handle_session_end(event: dict) -> int:
-    """Session terminating. Final memory flush and the safety-net point
-    for Phase 5's Mem0 sync (best-effort, never blocks session close).
-    For Phase 4 (file-backed memory only), this just ensures the last
-    event of the session is recorded so handoff_current.md reflects
-    final state on next SessionStart.
+    """Session terminating. Final memory flush + fire-and-forget Mem0 sync.
+
+    Records the SessionEnd event to Layer A, then spawns
+    `python scripts/mem0_bootstrap.py sync` as a detached background
+    subprocess (no wait, no timeout in this hook handler) so Layer B
+    catches up before the next session starts.
+
+    Synchronous network I/O in a 30-second hook timeout is dangerous;
+    a fire-and-forget subprocess is the cleaner pattern. The
+    background process inherits the env so CLAUDE_PROJECT_DIR routes
+    correctly. Stdout/stderr are dropped because the hook handler is
+    closing anyway.
     """
     root = repo_root_from_event(event)
     runs = discover_active_runs(root)
@@ -255,7 +262,61 @@ def handle_session_end(event: dict) -> int:
     message = f"Session ending (reason={reason}); final memory snapshot."
     append_hook_event(root, "SessionEnd", message)
     record_hook_memory(root, "SessionEnd", message, {"reason": reason, "final_flush": True})
+
+    _spawn_mem0_sync_detached(root)
     return 0
+
+
+def _spawn_mem0_sync_detached(repo_root) -> None:
+    """Fire-and-forget background subprocess for `mem0 sync`.
+
+    Best-effort: only runs when .mem0/config.json exists (Mem0 enabled).
+    Silently no-ops otherwise. Errors are intentionally not surfaced
+    because the SessionEnd hook is closing and operator visibility into
+    background failures comes from the Layer A outbox + the next
+    SessionStart's handoff_current.md.
+    """
+    import os
+    import subprocess
+    import sys
+
+    config_path = repo_root / ".mem0" / "config.json"
+    if not config_path.exists():
+        return
+    plugin_root = None
+    try:
+        from pathlib import Path
+        plugin_root = Path(__file__).resolve().parents[1]
+    except Exception:  # noqa: BLE001
+        return
+    if plugin_root is None:
+        return
+    bootstrap = plugin_root / "scripts" / "mem0_bootstrap.py"
+    if not bootstrap.exists():
+        return
+
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = str(repo_root)
+
+    creation_flags = 0
+    if sys.platform == "win32":
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP - the subprocess does not
+        # hold the Cowork console; the hook handler can exit immediately.
+        creation_flags = 0x00000008 | 0x00000200
+    try:
+        subprocess.Popen(
+            [sys.executable, str(bootstrap), "sync"],
+            cwd=str(repo_root),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=creation_flags,
+        )
+    except (OSError, FileNotFoundError):
+        # Background sync is best-effort; failure is non-fatal.
+        return
 
 
 HANDLERS = {

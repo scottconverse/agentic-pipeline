@@ -423,3 +423,88 @@ def test_update_succeeds_when_allowed(tmp_path) -> None:
 
     assert result["status"] == "updated"
     assert adapter.updates == [("mem-1", "revised content")]
+
+
+# ---------------------------------------------------------------------------
+# Prune --execute behavior (Layer A archive + Layer B delete)
+# ---------------------------------------------------------------------------
+
+
+def test_prune_dry_run_does_not_archive(tmp_path, monkeypatch) -> None:
+    """Dry-run lists candidates but never touches files or backend."""
+    import sys
+    import time
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    runs_root = tmp_path / ".agent-runs"
+    runs_root.mkdir()
+    aged_run = runs_root / "old-run"
+    aged_run.mkdir()
+    (aged_run / "marker.md").write_text("x", encoding="utf-8")
+    # Backdate the directory by 10 days
+    old_time = time.time() - (10 * 86400)
+    import os
+    os.utime(aged_run, (old_time, old_time))
+
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    import mem0_bootstrap
+    import argparse
+    args = argparse.Namespace(execute=False, yes=False)
+
+    rc = mem0_bootstrap.cmd_prune(args)
+
+    assert rc == 0
+    assert aged_run.exists(), "dry-run must not touch any files"
+    assert not (runs_root / "_archived").exists()
+
+
+def test_prune_execute_archives_aged_layer_a_dirs(tmp_path, monkeypatch) -> None:
+    """--execute --yes moves aged run dirs to .agent-runs/_archived/."""
+    import sys
+    import time
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    runs_root = tmp_path / ".agent-runs"
+    runs_root.mkdir()
+    aged_run = runs_root / "old-run"
+    aged_run.mkdir()
+    (aged_run / "marker.md").write_text("x", encoding="utf-8")
+    fresh_run = runs_root / "fresh-run"
+    fresh_run.mkdir()
+    old_time = time.time() - (30 * 86400)
+    import os
+    os.utime(aged_run, (old_time, old_time))
+
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    import mem0_bootstrap
+    import argparse
+    args = argparse.Namespace(execute=True, yes=True)
+
+    rc = mem0_bootstrap.cmd_prune(args)
+
+    assert rc == 0
+    assert not aged_run.exists(), "aged run must be moved out"
+    assert fresh_run.exists(), "fresh run must be preserved"
+    archive_root = runs_root / "_archived"
+    assert archive_root.exists()
+    archived = list(archive_root.iterdir())
+    assert len(archived) == 1
+    assert archived[0].name.startswith("old-run-")
+
+
+def test_prune_execute_without_yes_refuses(tmp_path, monkeypatch) -> None:
+    """--execute without --yes refuses to act (FR-12 non-interactive token)."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    runs_root = tmp_path / ".agent-runs"
+    runs_root.mkdir()
+
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    import mem0_bootstrap
+    import argparse
+    args = argparse.Namespace(execute=True, yes=False)
+
+    rc = mem0_bootstrap.cmd_prune(args)
+
+    assert rc == 2

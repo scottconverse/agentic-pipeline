@@ -36,6 +36,39 @@ def _project_root() -> Path:
     return Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
 
 
+# Pin for the on-demand vendor clone. Refresh by editing this constant
+# and verifying against the new commit. Documented at vendor/VENDOR_PINS.md.
+MEM0_VENDOR_REPO = "https://github.com/mem0ai/mem0.git"
+MEM0_VENDOR_PIN = "main"  # TODO: pin a specific commit once an end-to-end smoke validates one
+
+
+def _ensure_vendor_mem0(repo_root: Path) -> Path:
+    """Clone or update vendor/mem0/ to the pinned commit. Returns the path
+    to `vendor/mem0/server/` where docker-compose.yml lives.
+
+    Best-effort; raises subprocess.CalledProcessError if git is unavailable
+    or the network is down, so the caller can surface a clean error to the
+    operator. The CLI translates that into a 2 exit code with a guidance
+    message rather than crashing.
+    """
+    vendor_dir = repo_root / "vendor" / "mem0"
+    if vendor_dir.exists() and (vendor_dir / ".git").exists():
+        subprocess.run(["git", "fetch", "origin"], cwd=vendor_dir, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "checkout", MEM0_VENDOR_PIN], cwd=vendor_dir, check=True, capture_output=True, text=True)
+        return vendor_dir / "server"
+
+    vendor_dir.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "clone", "--depth", "50", MEM0_VENDOR_REPO, str(vendor_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if MEM0_VENDOR_PIN != "main":
+        subprocess.run(["git", "checkout", MEM0_VENDOR_PIN], cwd=vendor_dir, check=True, capture_output=True, text=True)
+    return vendor_dir / "server"
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     """`pipeline mem0 init` - create .mem0/config.json + consent file."""
     root = _project_root()
@@ -82,7 +115,12 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_up(args: argparse.Namespace) -> int:
-    """`pipeline mem0 up` - docker compose up the OSS stack."""
+    """`pipeline mem0 up` - docker compose up the OSS stack.
+
+    Auto-vendors mem0ai/mem0 at the pinned commit (MEM0_VENDOR_PIN) into
+    ./vendor/mem0/ if not already present, then runs `docker compose up
+    -d` against vendor/mem0/server/.
+    """
     root = _project_root()
     config = load_config(root)
     if config.mode != "oss":
@@ -92,8 +130,14 @@ def cmd_up(args: argparse.Namespace) -> int:
     if not compose_dir.is_absolute():
         compose_dir = root / compose_dir
     if not compose_dir.exists():
-        print(f"mem0_bootstrap: compose dir not found at {compose_dir}. Vendor mem0/server/ first.", file=sys.stderr)
-        return 2
+        # Try auto-vendor: clone mem0ai/mem0 at pinned commit
+        print(f"mem0_bootstrap: compose dir not found at {compose_dir}; vendoring mem0ai/mem0 at pin={MEM0_VENDOR_PIN}...")
+        try:
+            compose_dir = _ensure_vendor_mem0(root)
+        except subprocess.CalledProcessError as exc:
+            print(f"mem0_bootstrap: vendor clone failed: {exc.stderr or exc}", file=sys.stderr)
+            print("mem0_bootstrap: clone manually: git clone https://github.com/mem0ai/mem0.git vendor/mem0", file=sys.stderr)
+            return 2
     proc = subprocess.run(
         ["docker", "compose", "up", "-d"],
         cwd=compose_dir,
@@ -205,26 +249,106 @@ def cmd_sync(args: argparse.Namespace) -> int:
 def cmd_prune(args: argparse.Namespace) -> int:
     """`pipeline mem0 prune` - human-driven hygiene per FR-12.
 
-    Lists candidates by age and asks for explicit confirmation before any
-    delete. Not implemented as a one-shot for safety - dry-run is the
-    default; pass --execute to actually delete.
+    Two-stage prune:
+      Layer A (file-backed): archive aged .agent-runs/<run-id>/ directories
+        to .agent-runs/_archived/<run-id>-<epoch>/ instead of deleting.
+        Reversible, leaves a trail, never loses evidence.
+      Layer B (Mem0): list candidates by type + age. `--execute --yes`
+        actually deletes via policy.prune_delete (the only path that
+        sets allowed_by_prune=True).
+
+    Long-lived `anti_pattern` and `decision` memories are NEVER auto-deleted;
+    they're listed for explicit human review per FR-12.
     """
     root = _project_root()
     config = load_config(root)
-    if not config.enabled:
-        print("mem0_bootstrap: prune - Mem0 not enabled; nothing to prune.")
-        return 1
-    print(
-        "mem0_bootstrap: prune - candidate listing.\n"
-        f"  run_id memories older than {config.hygiene.prune_run_id_after_days} days will be flagged.\n"
-        f"  session_state memories older than {config.hygiene.prune_session_state_after_days} days will be flagged.\n"
-        f"  anti_pattern + decision memories older than {config.hygiene.review_long_lived_after_days} days are listed for review (not deleted)."
-    )
+    runs_root = root / ".agent-runs"
+
+    # Layer A: enumerate aged run dirs
+    import time
+    now = time.time()
+    age_seconds = config.hygiene.prune_run_id_after_days * 86400
+    aged_runs: list[Path] = []
+    if runs_root.exists():
+        for run_dir in runs_root.iterdir():
+            if not run_dir.is_dir() or run_dir.name.startswith("_"):
+                continue
+            mtime = run_dir.stat().st_mtime
+            if (now - mtime) > age_seconds:
+                aged_runs.append(run_dir)
+
+    print("mem0_bootstrap: prune - Layer A candidates (file-backed run dirs)")
+    print(f"  threshold: older than {config.hygiene.prune_run_id_after_days} days")
+    print(f"  found: {len(aged_runs)} run dir(s) eligible to archive")
+    for run_dir in aged_runs:
+        age_days = int((now - run_dir.stat().st_mtime) // 86400)
+        print(f"    - {run_dir.name} (age {age_days} days)")
+
+    # Layer B: enumerate by type via adapter (if enabled)
+    long_lived_candidates: list[dict] = []
+    aged_session_state: list[dict] = []
+    if config.enabled:
+        try:
+            identity = derive_identity(root)
+            adapter = build_adapter(config)
+            policy = build_policy(config, identity, adapter=adapter)
+            all_memories = adapter.get_all(filters=identity.as_filter())
+            for record in all_memories:
+                meta = (record.metadata or {})
+                record_type = str(meta.get("type", ""))
+                ts = meta.get("source_timestamp") or meta.get("timestamp") or ""
+                if record_type == "session_state":
+                    aged_session_state.append({"id": record.id, "type": record_type, "ts": ts})
+                if record_type in {"anti_pattern", "decision"}:
+                    long_lived_candidates.append({"id": record.id, "type": record_type, "ts": ts})
+        except Exception as exc:  # noqa: BLE001
+            print(f"  Layer B enumeration unavailable: {exc}")
+
+    if aged_session_state:
+        print(f"\n  Layer B session_state candidates older than {config.hygiene.prune_session_state_after_days} days: {len(aged_session_state)}")
+    if long_lived_candidates:
+        print(f"\n  Layer B long-lived (review-only, never auto-deleted): {len(long_lived_candidates)}")
+        print("  Per FR-12 these require explicit human review; not deleted by --execute.")
+        for cand in long_lived_candidates[:5]:
+            print(f"    - {cand['id']} [{cand['type']}] {cand['ts']}")
+
     if not args.execute:
-        print("mem0_bootstrap: prune dry-run complete. Pass --execute to actually delete (requires interactive confirm per FR-12).")
+        print("\nmem0_bootstrap: prune dry-run complete. Pass --execute --yes to archive Layer A and delete Layer B session_state.")
         return 0
-    print("mem0_bootstrap: prune execute mode not yet implemented; requires interactive operator confirmation per FR-12. Stop.")
-    return 2
+
+    if not args.yes:
+        print("\nmem0_bootstrap: prune --execute requires --yes for non-interactive confirmation per FR-12.")
+        return 2
+
+    # Execute: archive Layer A
+    archive_root = runs_root / "_archived"
+    archive_root.mkdir(exist_ok=True)
+    archived = 0
+    for run_dir in aged_runs:
+        target = archive_root / f"{run_dir.name}-{int(now)}"
+        try:
+            run_dir.rename(target)
+            archived += 1
+        except OSError as exc:
+            print(f"  archive failed for {run_dir.name}: {exc}", file=sys.stderr)
+    print(f"\nmem0_bootstrap: prune Layer A - archived {archived}/{len(aged_runs)} run dir(s) under {archive_root}")
+
+    # Execute: delete Layer B session_state
+    deleted = 0
+    if config.enabled and aged_session_state:
+        identity = derive_identity(root)
+        adapter = build_adapter(config)
+        policy = build_policy(config, identity, adapter=adapter)
+        for cand in aged_session_state:
+            try:
+                policy.prune_delete(cand["id"])
+                deleted += 1
+            except Exception as exc:  # noqa: BLE001
+                print(f"  prune_delete failed for {cand['id']}: {exc}", file=sys.stderr)
+    print(f"mem0_bootstrap: prune Layer B - deleted {deleted} session_state memor(ies)")
+    print(f"mem0_bootstrap: prune Layer B - long-lived candidates left for human review: {len(long_lived_candidates)}")
+
+    return 0
 
 
 def main() -> int:
@@ -253,7 +377,8 @@ def main() -> int:
     p_sync.set_defaults(func=cmd_sync)
 
     p_prune = subs.add_parser("prune", help="Hygiene: list/delete aged memories (per FR-12)")
-    p_prune.add_argument("--execute", action="store_true", help="Actually delete; default is dry-run")
+    p_prune.add_argument("--execute", action="store_true", help="Actually archive Layer A + delete Layer B session_state; default is dry-run")
+    p_prune.add_argument("--yes", action="store_true", help="Non-interactive confirmation token; required with --execute")
     p_prune.set_defaults(func=cmd_prune)
 
     args = parser.parse_args()

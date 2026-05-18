@@ -329,3 +329,52 @@ def test_session_end_with_no_active_run_is_silent(tmp_path: Path, monkeypatch) -
 
     assert hook_runner.handle_session_end({"cwd": str(tmp_path), "reason": "user_quit"}) == 0
     assert not (tmp_path / ".agent-runs").exists()
+
+
+def test_session_end_spawns_mem0_sync_when_config_present(tmp_path: Path, monkeypatch) -> None:
+    """When .mem0/config.json exists, SessionEnd fires off mem0 sync as a
+    detached background subprocess. Verify Popen is called with the right
+    command shape; don't actually run the subprocess."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_active_run(tmp_path)
+    (tmp_path / ".mem0").mkdir()
+    (tmp_path / ".mem0" / "config.json").write_text('{"mode": "oss"}', encoding="utf-8")
+
+    spawned: list[dict] = []
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            spawned.append({"cmd": cmd, "kwargs": kwargs})
+
+    import subprocess as _subprocess
+    monkeypatch.setattr(_subprocess, "Popen", _FakePopen)
+
+    assert hook_runner.handle_session_end({"cwd": str(tmp_path), "reason": "user_quit"}) == 0
+
+    assert len(spawned) == 1, "SessionEnd should spawn exactly one background process"
+    cmd = spawned[0]["cmd"]
+    assert "mem0_bootstrap.py" in cmd[-2]  # second-to-last is the script
+    assert cmd[-1] == "sync"
+    kwargs = spawned[0]["kwargs"]
+    assert kwargs.get("stdout") == _subprocess.DEVNULL
+    assert kwargs.get("stderr") == _subprocess.DEVNULL
+    assert kwargs.get("env", {}).get("CLAUDE_PROJECT_DIR") == str(tmp_path)
+
+
+def test_session_end_does_not_spawn_when_mem0_not_configured(tmp_path: Path, monkeypatch) -> None:
+    """No .mem0/config.json -> no background subprocess. Layer A still works."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_active_run(tmp_path)
+
+    spawned: list = []
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            spawned.append(cmd)
+
+    import subprocess as _subprocess
+    monkeypatch.setattr(_subprocess, "Popen", _FakePopen)
+
+    assert hook_runner.handle_session_end({"cwd": str(tmp_path), "reason": "user_quit"}) == 0
+
+    assert spawned == []
