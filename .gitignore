@@ -24,6 +24,9 @@ desktop.ini
 # Pipeline runs (template projects use this; here it'd be empty anyway)
 .agent-runs/
 
+# Mem0 layer configuration (operator-project-scoped; never commit)
+.mem0/
+
 # Plugin install metadata (some Claude Code surfaces write a .claude/ dir
 # alongside the repo; never commit it).
 .claude/

@@ -1,6 +1,6 @@
 # tests/
 
-Test surface for `agent-pipeline-claude` v1.1.0+.
+Test surface for `agent-pipeline-claude` v2.0.0+.
 
 ## Testing taxonomy
 

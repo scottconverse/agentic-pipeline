@@ -1,9 +1,105 @@
 # Architecture
 
+> **v2.0 update (2026-05-17):** Two architectural layers added on top of the v1.3 pipeline. See "v2.0 architecture extensions" below. The original v1.x architecture (gates, role files, judge layer, auto-promote) is preserved unchanged.
+
+## v2.0 architecture extensions
+
+### Layer 1: Eleven Cowork lifecycle hooks (`hooks/`)
+
+```mermaid
+flowchart LR
+    Cowork[Cowork session events] --> Runner["hooks/hook_runner.py"]
+    Runner --> SS[handle_session_start]
+    Runner --> UPS[handle_user_prompt_submit]
+    Runner --> PreT[handle_pre_tool_use]
+    Runner --> PermR[handle_permission_request]
+    Runner --> PostT[handle_post_tool_use]
+    Runner --> PostF[handle_post_tool_use_failure]
+    Runner --> PreC[handle_pre_compact]
+    Runner --> PostC[handle_post_compact]
+    Runner --> SubS[handle_subagent_stop]
+    Runner --> Stop[handle_stop]
+    Runner --> SE[handle_session_end]
+
+    SS & UPS & PreT & PermR & PostT & PostF & PreC & PostC & SubS & Stop & SE --> Mem["record_hook_memory()"]
+    Mem --> LayerA[".agent-runs/<run-id>/memory/*.jsonl"]
+    Mem --> Handoff[handoff_current.md]
+```
+
+Hooks fire from Cowork's runtime via `hooks/hooks.json`. Each handler:
+
+1. Resolves the project root from `$CLAUDE_PROJECT_DIR` (Cowork roots cwd at `.klodock`; the env var is the right answer).
+2. Discovers active runs by walking `.agent-runs/*/active-control-state.md`.
+3. Decides on the event (block, deny, warn, allow, inject context, record memory).
+4. Calls `record_hook_memory()` which appends to the right `*.jsonl` and regenerates `handoff_current.md`.
+
+The PostCompact handler re-injects `handoff_current.md` as `additionalContext` — the load-bearing mechanism that makes pipeline state survive context compaction.
+
+### Layer 2: Two-layer memory (`memory/`)
+
+```mermaid
+flowchart TB
+    Hooks[Phase 4 hooks] -->|always| LayerA[".agent-runs/<run-id>/memory/*.jsonl<br/>Layer A: file-backed, unconditional"]
+    SyncCmd["pipeline mem0 sync"] -->|reads typed records| LayerA
+    SyncCmd -->|policy.add| Policy[PolicyLayer]
+    Policy -->|FR-7 type check| Policy
+    Policy -->|FR-11 redact| Policy
+    Policy -->|FR-6 scope| Policy
+    Policy -->|FR-13 breaker| Adapter
+    Adapter -->|platform or oss| LayerB["Layer B: Mem0<br/>(best-effort, cross-session)"]
+    Policy -.->|on breaker open| Outbox[".mem0/outbox/*.json"]
+```
+
+**Layer A** is the safety floor: every hook writes here. No network, no docker, no SDK. Always works.
+
+**Layer B** is the cross-session bridge: typed records (those with `metadata.type` in the closed taxonomy `{decision, task_learning, anti_pattern, user_preference, environmental, convention, session_state}`) get forwarded to Mem0 via `pipeline mem0 sync`. The `PolicyLayer` enforces every PRD FR (scoping, taxonomy, budget, latency, redaction, circuit breaker, consent) before any backend call.
+
+Identity follows PRD §5.2:
+
+```text
+user_id  = sha256(git user.email)[:16]    # stable, no PII leak
+agent_id = "claude-code"                  # fixed
+app_id   = slug(git remote get-url origin) # repo-scoped
+run_id   = "{branch}-{short-sha}-{epoch}" # one per agent task
+```
+
+### Layer 3: Directive contract data flow
+
+```mermaid
+flowchart LR
+    D["directive.yaml"] --> H["SHA-256 hash"]
+    H --> L["run.log directive-bound line<br/>(only after conformance passes)"]
+    D --> C1["check_directive_conformance.py"]
+    M["manifest.yaml"] --> C1
+    S["scope-lock.yaml"] --> C1
+    C1 -->|"exact match"| MG["manifest gate auto-complete"]
+    C1 -->|"mismatch (never bound)"| MI["manifest gate stays interactive"]
+    C1 -->|"mismatch after bind"| STOP["exit 3 CONTRACT_DIVERGED<br/>orchestrator STOP"]
+    D --> C2["check_plan_against_directive.py"]
+    P["plan.md"] --> C2
+    C2 -->|all assertions pass| PG["plan gate auto-complete"]
+    C2 -->|any fails| PI["plan gate stays interactive"]
+    C2 -->|"manifest re-verify fails"| PSTOP["exit 2 CONTRACT_DIVERGED"]
+    D --> AP["auto_promote.py"]
+    Stack["verifier + critic + drift + policy + judge + tests"] --> AP
+    AP -->|"six base + N directive green"| MD["manager-decision.md<br/>PROMOTE with directive citation"]
+```
+
+All PR #5 amendments from the codex side are present:
+
+- **Bind-after-conformance**: the `directive-bound` line is written only after manifest AND scope-lock both match.
+- **Append-not-prepend**: the binding line is appended to `run.log`, preserving append-only invariant.
+- **Exit 3 CONTRACT_DIVERGED**: when bound + diverged on resume, the orchestrator STOPS rather than silently falling through.
+- **Downstream re-verify**: `auto_promote.py::_check_directive_manager` and `check_plan_against_directive.py` both re-verify manifest/scope conformance — the binding can't be the only proof.
+
+---
+
+# v1.x Architecture (preserved through v2.0)
+
 How the agent-pipeline-claude plugin is organized, what runs where, and which
 artifact each stage produces.
 
-**Current version: v1.1.0.** v1.1 fixes the install/runtime adapter that v1.0.0–v1.0.2 got wrong (one layout, namespaced invocation, validating marketplace manifest, self-contained skills) without changing pipeline behavior. v1.0 rebuilt the user-facing surface around four load-bearing decisions (Cowork-first, spec-aware drafting, one slash skill, chat-native gates) while preserving every v0.5 hardening mechanism intact. This document describes the v1.1 architecture; v0.5 stage names are referenced where the current flow is a thin orchestration change over a preserved mechanism.
+**Current version: v2.0.0.** v2.0 ("heavier-hand") adds three layers on top of the v1.3.x architecture documented below — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval with bind-after-conformance, and a Mem0 cross-session memory layer — without removing any of the v1.x gates. v1.3.x replaced the chat-APPROVE ceremony with `AskUserQuestion` modal prompts (one click each) for the three human gates (manifest, plan, manager). v1.1 fixed the install/runtime adapter that v1.0.0–v1.0.2 got wrong (one layout, namespaced invocation, validating marketplace manifest, self-contained skills) without changing pipeline behavior. v1.0 rebuilt the user-facing surface around four load-bearing decisions (Cowork-first, spec-aware drafting, one slash skill, chat-native gates) while preserving every v0.5 hardening mechanism intact. This document describes the v1.x stage architecture that v2.0 still rides on top of; the v2.0 hook/memory/directive layers are detailed in the v2.0 CHANGELOG entry.
 
 This document is for two audiences:
 
@@ -90,7 +186,7 @@ fresh subagent per stage.
 ```mermaid
 flowchart TB
     Start([User runs /run &quot;short description&quot;]) --> D[manifest-drafter<br/>role: pre-stage subagent<br/>reads project spec/release-plan/scope-lock]
-    D -- draft --> M[manifest gate<br/>role: human<br/>chat-message APPROVE]
+    D -- draft --> M[manifest gate<br/>role: human<br/>modal AskUserQuestion: APPROVE / REPLAN / BLOCK]
     M -- APPROVE --> R[research<br/>role: researcher<br/>artifact: research.md]
     R --> P[plan<br/>role: planner<br/>artifact: plan.md]
     P -- APPROVE --> TW[test-write<br/>role: test-writer<br/>artifact: failing-tests-report.md]
@@ -199,9 +295,8 @@ sequenceDiagram
     O->>FS: write manifest.yaml skeleton
     O-->>U: drafter walks project; shows drafted manifest in chat
     U->>FS: edit manifest.yaml
-    U->>O: APPROVE  (chat-message reply continues the same /run invocation)
-    O->>U: AskUserQuestion: APPROVE manifest?
-    U->>O: APPROVE
+    O->>U: AskUserQuestion: APPROVE manifest? (v1.3.0+ modal; v0.5.x chat-text gate retired)
+    U->>O: APPROVE  (one click on the modal option)
     O->>FS: append run.log: manifest COMPLETE
 
     Note over U,FS: GATE 2 — plan
@@ -757,8 +852,10 @@ sequenceDiagram
 - **Artifact** — the single named file a stage produces, written into
   `.agent-runs/<run-id>/`.
 - **Gate** — a checkpoint where the pipeline halts. Either
-  `human_approval` (operator must type APPROVE) or implicit (a failing
-  policy check or empty artifact).
+  `human_approval` (operator clicks APPROVE / REPLAN / BLOCK in an
+  `AskUserQuestion` modal — v1.3.0 retired the v0.5.x "type APPROVE
+  in chat" ceremony) or implicit (a failing policy check or empty
+  artifact).
 - **Subagent** — a fresh Claude Code agent spawned by the orchestrator
   for a single stage. Has no memory of the orchestrator's session.
 - **Run ID** — `YYYY-MM-DD-<slug>`, the directory name under

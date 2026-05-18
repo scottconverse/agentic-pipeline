@@ -5,6 +5,300 @@ All notable changes to `agent-pipeline-claude` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added — audit Pass 13 (Cluster L + M) — control-loop smoke tests + Python launcher doc
+
+Two threads in one pass:
+
+**TEST-001 (Critical, partial close):** the five v2.0 control-loop scripts (`check_pipeline_control_loop.py`, `stop_validator.py`, `final_response_gate.py`, `pipeline_continue.py`, `agent_decision_gate.py`) had zero direct test coverage. They were exercised transitively by the hooks tests but a regression in their public surface would not have been caught at the unit layer.
+
+- New file `tests/test_control_loop_smoke.py` with 10 smoke tests covering: `parse_control_state` + `validate_control_state` happy path + two specific failure modes; `stop_validator.discover_state_files` + `active_state_files` filter; `final_response_gate.evaluate_final_response_gate` empty + blocked cases; `pipeline_continue.next_action` import-only smoke; `agent_decision_gate` import-only smoke. Comprehensive coverage is still a future sprint; this is the floor.
+
+**QA-012 (Minor):** `hooks/hooks.json` invokes `python …` (the Windows-default binary name). On macOS and many Linux distros the binary is `python3` and `python` is unset; the hook layer silently no-ops. The binary name itself isn't trivially switchable (changing to `python3` would break Windows). Added a USER-MANUAL troubleshooting entry naming the symptom and giving the launcher-shim workaround (`ln -s "$(which python3)" ~/.local/bin/python` or `apt install python-is-python3`). Long-term fix (auto-detect or platform-aware hooks.json) deferred to a follow-up.
+
+Tests: 270 passed (+10 new), 1 skipped.
+
+### Added — audit Pass 12 (Cluster K) — intake protection bridge (warn-not-block)
+
+ENG-009 / UX-006 / QA-004 / QA-010: the `intake` skill drafted manifest + scope-lock + intake.md under `.agent-runs/<run-id>/` but did not write an `active-control-state.md`. Result: `discover_active_runs()` saw zero active runs, the hook layer ran no scope guards, and the operator got zero signal that a run was staged. The other extreme (auto-creating `active_run: true`) would have been the wrong fix — the manifest is mid-draft and shouldn't auto-deny on `allowed_paths` violations against scope the operator hasn't finalized yet.
+
+The audit-locked decision was **bridge model**: intake writes the active-control-state but with `active_run: drafting`. Hook layer surfaces the run; scope guards downgrade from deny to advisory; absolute reasons (destructive shell, credential exposure) still deny.
+
+- `hooks/hook_utils.py`:
+  - `ActiveRun` dataclass: new `is_drafting: bool = False` field.
+  - `discover_active_runs()` now also picks up runs with `active_run: drafting` and returns them with `is_drafting=True`.
+  - `session_context()` labels drafting runs as `[DRAFTING (intake-staged)]` and appends a paragraph explaining the advisory-mode semantics so the LLM sees the state alongside the standard context.
+  - `permission_decision()` introduces `_is_run_scoped_reason()` to distinguish run-scoped reasons (manifest allowed_paths, pipeline contract artifact) from absolute reasons (destructive command, credential exposure). When every active run is drafting AND every deny reason is run-scoped, returns `None` (no auto-deny). Mixed cases still deny on the absolute reasons.
+  - Directive-bound auto-allow now requires `not is_drafting` — a drafting run with a stale directive-bound run.log line no longer auto-allows.
+- `skills/intake/references/intake.md`: new artifact 5 (`active-control-state.md`) with the bridge content. Updated final-response paragraph names the bridge state and the promotion path (`/agent-pipeline-claude:run resume <id>`).
+- 7 new regression tests in `tests/test_hooks.py`:
+  - `test_discover_active_runs_marks_drafting_runs_is_drafting`
+  - `test_session_context_labels_drafting_run`
+  - `test_permission_decision_does_not_deny_drafting_scope_violation`
+  - `test_permission_decision_still_denies_drafting_absolute_violations`
+  - `test_permission_decision_drafting_does_not_auto_allow_on_directive_bound`
+  - `test_intake_skill_documents_active_control_state_bridge`
+  - (Plus the existing run-discovery test indirectly covers the non-drafting path.)
+
+**Operator impact:** after `/agent-pipeline-claude:intake "feature foo bar"`, the operator sees the drafting run in session-context, can `cat` / edit the manifest freely (no scope-deny ambushes while drafting), but destructive operations (`rm -rf`, leaked credentials) still get blocked. Promoting via `/agent-pipeline-claude:run resume <id>` flips the state to fully active.
+
+### Fixed — audit Pass 11 (Cluster J + ENG-010) — doc staleness sweep + manifest-template v2.0 gates
+
+Pre-Pass-11 the user-facing docs claimed v1.1.0 / v1.1.1 in version labels, told operators to type `Reply APPROVE to start` in chat (retired by v1.3.0), pointed upgraders at `git checkout v1.1.0`, and left the manifest-template's `required_gates` list silent on the three v2.0 conditional gates (ENG-010). Operators reading the docs got a different mental model than what the code actually did.
+
+- `CHANGELOG.md` v2.0.0 entry: corrected the "171 tests" claim to the real count at HEAD `9634929` (191). Pre-fix-loop tests = 191, not 171; the audit caught this drift.
+- `README.md`: replaced `Reply APPROVE to start` with the modal flow description; replaced v1.1.0 in the migration-section upgrade snippet with v2.0.0; replaced the v0.5.x-to-v2.0 migration note's "chat messages (APPROVE / REPLAN / BLOCK)" with the modal description.
+- `USER-MANUAL.md`: upgrade snippet now targets v2.0.0.
+- `ARCHITECTURE.md`: "Current version" label now v2.0.0, with a paragraph describing what v2.0 added on top of the v1.x stage architecture (hooks, memory, directive contracts) that the doc still describes.
+- `tests/README.md` and `docs/VERIFICATION.md`: version labels updated; the v1.1.1 narrative is preserved as historical baseline with a pointer to CHANGELOG for current test count.
+- `docs/index.html`: eyebrow / badge / footer all updated to v2.0.0; "What changed in v1.1.0" section rewritten as "What changed in v2.0.0" listing hooks, persistent memory, directive contracts, scope-lock authority, and the preserved v1.3.0 modal-gate surface; the "no hooks" honest-caveat paragraph rewritten to describe the new hook layer (the prior claim is now wrong).
+- `scripts/check_manifest_schema.py`: gate_policy violation suggestion no longer cites "chat-APPROVE" — it now tells operators the field is retired and to remove it.
+- `pipelines/directive-template.yaml` and `skills/pipeline-init/.../pipelines/directive-template.yaml` (mirror): `author.name` and `authority.reference` replaced hardcoded `"Scott Converse"` / `"docs/design/example.md"` with placeholder strings (`<your-name-or-team>`, `<path/to/design-doc-or-pr-or-issue>`). Operators copying the template no longer inherit the maintainer's name as the directive author by accident.
+- `pipelines/manifest-template.yaml` and the mirror (ENG-010): added a comment block listing the three v2.0 conditional gates (`directive_bound`, `scope_lock_authority`, `execute_readiness`) and three commented-out gate lines that operators can uncomment when they author the matching artifact (directive.yaml / scope-lock.yaml / implementation-report.md). Conditional-skip via run_all.py's `CHECK_PREREQUISITES` table keeps v1.x runs unaffected.
+- 9 new regression tests in `tests/test_v130_redesign.py` pinning: README has no "Reply APPROVE to start" / "git checkout v1.1.0"; USER-MANUAL upgrade snippet targets v2.0.0; ARCHITECTURE Current version is v2.0.0; tests/README and docs/index.html version labels are v2.0+; manifest-template documents the three v2.0 conditional gates (both top-level + mirror); directive-template uses placeholder author/reference (both top-level + mirror); check_manifest_schema.py error string contains no `chat-APPROVE`.
+
+**Doc consistency invariant:** version labels and the modal-gate description match the code in README, USER-MANUAL, ARCHITECTURE, tests/README, docs/VERIFICATION, and the docs/index.html eyebrow/badge/footer. Pre-Pass-11 was worst-of-both-worlds: docs sold v1.x ceremony while code ran v2.0 hooks + modal gates. (Pass 11b — see entry above — closed three residual operator-facing chat-APPROVE surfaces inside `docs/index.html`'s stage-flow + gate-cards, the USER-MANUAL Glossary, and the `check_manifest_schema.py` payload mirror that Pass 11 missed.)
+
+### Fixed — audit Pass 11b (Pass 11 chat-APPROVE residue) — operator-facing landing page + glossary + mirror sweep
+
+End-sprint audit-lite caught three operator-facing chat-APPROVE residues that Pass 11's sweep missed: `docs/index.html`'s stage-flow diagram and "Three human gates, in chat" section still explicitly taught the retired chat ceremony; `USER-MANUAL.md`'s Glossary and Migration-from-v0.5.x section still described gates as chat messages; and the `check_manifest_schema.py` mirror in `skills/pipeline-init/.../scripts/` still carried the pre-Pass-11 error string with `chat-APPROVE` (Pass 11 only touched the top-level). Same pattern-fan-out failure mode that Pass 8a closed for `find_repo_root` — caught here before merge instead of after.
+
+- `docs/index.html`: stage-flow diagram now labels gates as `[gate N: modal APPROVE]`; gate-cards section heading rewritten as "Three human gates — modal, one click each" with `AskUserQuestion` named explicitly; first-use copy now says "click APPROVE in the modal" instead of "approve in chat".
+- `USER-MANUAL.md`: Glossary `Manifest` entry now reads "gated on a one-click modal APPROVE (`AskUserQuestion`) since v1.3.0"; Glossary `Gate` entry adds the modal description and a pointer to when chat-APPROVE was retired; Migration-from-v0.5.x section now describes modal prompts.
+- `skills/pipeline-init/references/pipeline-payload/scripts/check_manifest_schema.py`: gate_policy violation suggestion mirrored from the Pass 11 top-level fix — the field is documented as retired in v1.3.0+ with no replacement value needed.
+- 7 new regression tests in `tests/test_v130_redesign.py`: `test_landing_page_stage_flow_uses_modal_not_chat_approve`, `test_landing_page_three_gates_heading_says_modal`, `test_landing_page_does_not_claim_gates_are_chat_messages_not_modal`, `test_landing_page_first_use_does_not_say_approve_in_chat`, `test_user_manual_glossary_manifest_uses_modal_language`, `test_user_manual_migration_section_describes_modal_gates`, `test_check_manifest_schema_mirror_matches_top_level_chat_approve_removal`.
+
+### Fixed — audit Pass 10 (Cluster I) — contract-artifact warning only on writes
+
+ENG-006 / UX-005: `classify_tool_risk` and `tool_failure_context` emitted "pipeline contract artifact touched" on any tool invocation whose `tool_input` mentioned `manifest.yaml` / `directive.yaml` / `scope-lock.yaml` — including reads (`cat manifest.yaml`, `grep -n goal manifest.yaml`, `Read` tool on the file). Operators got the noisy warning every time they inspected the contract — which is the safe, encouraged behavior. The Phase 6.c fix had only split block-on-failure vs warn-on-success; the false-positive on reads stayed.
+
+- `hooks/hook_utils.py`: new `_is_read_only_operation(event)` helper. Returns `True` for tools in `_READ_ONLY_TOOL_NAMES` (Read, Grep, Glob, WebFetch, WebSearch, TodoWrite) and for `Bash` whose first token (after `cd … && ` stripping) is in `_READ_ONLY_BASH_TOKENS` (cat, head, tail, less, more, grep, rg, ls, dir, find, wc, stat, file, git, echo, printf, Get-Content, Select-String, Get-ChildItem, Get-Item). Output redirect (`>`, `>>`, `| tee`) keeps the command write-class regardless of first-token.
+- `classify_tool_risk` and `tool_failure_context` now AND-gate the contract-artifact warning with `not _is_read_only_operation(event)`.
+- 6 new regression tests in `tests/test_hooks.py`:
+  - `test_classify_tool_risk_does_not_warn_on_read_tool_manifest`
+  - `test_classify_tool_risk_does_not_warn_on_bash_cat_manifest`
+  - `test_classify_tool_risk_does_not_warn_on_bash_grep_manifest`
+  - `test_classify_tool_risk_warns_on_write_tool_manifest` (positive case — read suppression must not mask the legitimate warning)
+  - `test_classify_tool_risk_warns_on_bash_redirect_to_manifest` (`echo … > manifest.yaml` IS write-class)
+  - `test_tool_failure_context_no_contract_warning_on_read_failure`
+
+**UX impact:** the warning fires when it should (mid-run mutation of a contract artifact) and stays quiet when it shouldn't (operator reading the contract to debug). Pre-Pass-10 operators trained themselves to ignore the warning, defeating its purpose.
+
+### Fixed — audit Pass 9 (Cluster H + ENG-008) — Layer A metadata.type + pre-write secret scrub
+
+Two paired memory-layer fixes:
+
+**QA-001 (Cluster H):** `hooks.hook_utils.record_hook_memory` wrote every record with `metadata = {}`. The Layer A→B flush filter (`memory.sync.flush_layer_a_to_mem0`) requires `metadata.type` ∈ `allowed_types` to forward a record. Result: every Layer A row was silently dropped by the flush as `skipped_no_type`. Layer B was permanently starved of data. The "cross-session memory" promise was unkept.
+
+- `hooks/hook_utils.py`: added `_EVENT_DEFAULT_TYPE` mapping each of the 11 hook events to a FR-7 taxonomy type. `record_hook_memory` now sets `metadata["type"]` from the mapping when the caller didn't pass one explicitly. PostToolUseFailure defaults to `"anti_pattern"`; all other events default to `"session_state"`. Explicit caller-supplied `metadata["type"]` still wins (decision-ledger, intake, etc.).
+
+**ENG-008:** Layer A is the durable filesystem floor — records go to `.agent-runs/<run-id>/memory/*.jsonl` regardless of Mem0 state. Verbatim Bash commands with embedded credentials (e.g., `curl -H 'Authorization: Bearer …'`) were written to disk without scrubbing. The Layer B path runs through `scrub()` (PolicyLayer.add); Layer A did not. Secrets leaked into the durable artifact.
+
+- `hooks/hook_utils.py`: new helper `_redact_message_for_layer_a()` runs the canonical `memory.redaction.scrub()` against every message before write. On match, the record is preserved (timestamp + event + run_id stay traceable) but the message body is replaced with `[REDACTED: <reason>]` and `metadata.redacted = True` plus `metadata.redacted_match_count`. Fail-closed: if `scrub()` raises (malformed regex, missing import), the message is treated as secret-bearing.
+
+5 new regression tests in `tests/test_hooks.py`:
+- `test_record_hook_memory_auto_populates_metadata_type`
+- `test_record_hook_memory_post_tool_use_failure_is_anti_pattern`
+- `test_record_hook_memory_explicit_type_overrides_default` (callers still win)
+- `test_record_hook_memory_redacts_message_with_secret`
+- `test_record_hook_memory_does_not_redact_innocuous_message`
+
+**Security/UX impact:** Layer B finally sees Layer A records. Bash commands with credentials no longer land verbatim in the durable memory trail. Both fixes live in the same producer (`record_hook_memory`), so they ship as a paired fix; reverting one without the other is dangerous (Layer B starts seeing unredacted records, or sees redacted records without the type-tagging).
+
+### Fixed — audit Pass 8a (Pass 2 mirror drift) — pipeline-payload scripts pick up centralized `find_repo_root`
+
+Mid-sprint audit-lite caught a same-class regression: Pass 2 centralized `find_repo_root` in 11 top-level scripts but the pipeline-payload mirror still shipped 10 local `_find_repo_root` helpers that ignored `CLAUDE_PROJECT_DIR`. Since pipeline-init copies the mirror into operator projects as `scripts/policy/`, operators who scaffold a project today would inherit the *pre-Pass-2* bug — the exact "incomplete same-class fix" failure mode the audit had warned about.
+
+- Replaced the local `_find_repo_root` in 10 pipeline-payload scripts with `from policy_utils import find_repo_root` + `find_repo_root(__file__)`: `auto_promote.py`, `check_adr_gate.py`, `check_allowed_paths.py`, `check_critic_evidence.py`, `check_manager_evidence.py`, `check_manifest_immutable.py`, `check_manifest_paths.py`, `check_manifest_schema.py`, `check_no_todos.py`, `check_stage_done.py`. `run_all.py` was already done in Pass 3. `check_active_target.py` keeps its cwd-based helper (intentional — it's about the user's active target, not the project root).
+- New parametrized test `test_pipeline_payload_scripts_use_central_find_repo_root` covers all 11 mirror scripts. New `test_check_active_target_intentionally_keeps_local_helper` pins the one exception. Drift in either direction now fails CI.
+
+**Operator impact:** projects scaffolded after this commit get the `CLAUDE_PROJECT_DIR`-honoring resolution in every policy script. Previously-scaffolded projects can refresh via `/pipeline-init` → "Refresh policy scripts only" modal option.
+
+### Fixed — audit Pass 7 (Cluster G) — MCP local-write tool allowlist
+
+Phase 6.c added `_extract_write_paths()` to make the scope guard pick up `tool_input.file_path` / `edits[].file_path` / `notebook_path` for the core Claude tools (Write, Edit, MultiEdit, NotebookEdit). MCP write tools — `mcp__*__create_file`, `mcp__*__copy_file`, etc. — were not covered. A subprocess that invoked an MCP file-creation tool could write outside `manifest.allowed_paths` without tripping the scope-lock guard.
+
+The audit synthesis (Cluster G) rejected generic recursive path extraction because it would false-positive on every MCP that happens to have a string field named `path` or `destination` — including remote APIs (mcp__github__*, mcp__slack__*) that never touch the local filesystem. Audit-locked decision: explicit allowlist of local-filesystem write tools.
+
+- `hooks/hook_utils.py`: added `MCP_LOCAL_WRITE_TOOL_RULES` — a tuple of `(regex, field-names)` pairs for the known local-filesystem MCP write tools (`create_file`, `copy_file`, `write_file`, `upload_file`, `save_profile`, PDF output tools). New helper `_extract_mcp_local_write_paths(tool_name, tool_input)` consults the allowlist; `_extract_write_paths()` calls it when iterating an event dict.
+- Intentionally NOT in the allowlist: `mcp__github__create_or_update_file`, `mcp__github__push_files` (remote API pushes, not local writes — already gated by EXTERNAL_OR_RELEASE_PATTERNS), `mcp__*__send_message`, `mcp__*__post_*` (outbound network, no local write surface).
+- 5 new regression tests in `tests/test_hooks.py`: `test_pre_tool_use_denies_mcp_create_file_with_out_of_scope_path`, `test_pre_tool_use_denies_mcp_copy_file_with_out_of_scope_destination`, `test_pre_tool_use_does_not_gate_mcp_github_push_files` (remote tool not gated by allowed_paths), `test_extract_mcp_local_write_paths_unknown_mcp_returns_empty` (locks the explicit-allowlist posture), `test_extract_mcp_local_write_paths_known_create_file`.
+
+**Operator impact:** scope-lock now catches MCP-driven writes too. To gate a new local-filesystem MCP write surface, add a pattern to `MCP_LOCAL_WRITE_TOOL_RULES`. Generic field-name fishing is intentionally not supported.
+
+### Fixed — audit Pass 6 (Cluster F) — `secret_patterns` defaults match canonical
+
+The `memory/redaction.py` module exports `_DEFAULT_SECRET_PATTERNS` covering `sk-`/`m0-`/`gh[pousr]-` tokens, BEGIN PRIVATE KEY blocks, AWS access keys (`AKIA…`), and Bearer tokens. The `memory/config.py:RedactionConfig` dataclass shipped a narrower default — only the first two patterns. Because `load_config()` falls back to `RedactionConfig().secret_patterns` whenever a project's `.mem0/config.json` lacks an explicit `redaction:` block (or sets it to empty), a `.mem0/config.json` silently downgraded the redaction surface — AWS keys and Bearer tokens were passed through `scrub()` undetected. Same drift in `block_paths` (`~/.kube/config` missing from the dataclass default).
+
+- `memory/config.py`: `RedactionConfig.secret_patterns` and `.block_paths` defaults are now imported from `memory/redaction.py` (`_DEFAULT_SECRET_PATTERNS`, `_DEFAULT_BLOCK_PATHS`). Single source of truth — adding a new canonical pattern propagates without a config-layer edit.
+- `pipelines/mem0-config-template.json` + `skills/pipeline-init/.../mem0-config-template.json` (mirror): templates now include all four canonical patterns and the `~/.kube/config` block path. Operators who copy the template into `.mem0/config.json` get the full set out of the box.
+- 3 new regression tests in `tests/test_memory_layer.py`: `test_redaction_config_defaults_match_canonical_redaction_module` (dataclass ↔ module lockstep), `test_pipelines_template_redaction_matches_canonical` (canonical template includes AKIA + Bearer + ~/.kube/config), `test_scaffold_payload_redaction_matches_canonical` (pipeline-payload mirror lockstep).
+
+**Security impact:** `.mem0/config.json` projects that previously relied on dataclass defaults now block AWS access keys and Bearer tokens. No code path widened — only the previously-narrowed default does. If a project explicitly set `redaction.secret_patterns: [...]` in their `.mem0/config.json`, their override is unchanged.
+
+### Fixed — audit Pass 5 (Cluster E) — pipeline-init uses AskUserQuestion modal
+
+v1.3.0 retired the chat-`APPROVE` ceremony for the three run-time gates (manifest, plan, manager) because the LLM kept halting on the interpretive surface area of free-form gate text. The pipeline-init skill missed that bandwagon — `skills/pipeline-init/SKILL.md` explicitly instructed Claude to "Render the orientation summary as a plain chat message — do not use `AskUserQuestion` for the APPROVE gate." Operators saw modal gates inside `/run` but free-text gates inside `/pipeline-init`. v2.0's "heavier hand" pitch couldn't credibly claim modal-everywhere when the front door still asked operators to type APPROVE.
+
+- `skills/pipeline-init/SKILL.md`: reversed the explicit ban on AskUserQuestion. The orientation summary stays in chat (informational); the approve / wait / adjust decision goes through a modal.
+- `skills/pipeline-init/references/pipeline-init.md`: updated three gates to use `AskUserQuestion` blocks with concrete option labels — the scaffold gate (Step 2/3), the greenfield SPEC.md gate, and the re-init refresh-subset gate. Removed all "Reply `APPROVE`" / "Reply with a, b, c, or d" instructions.
+- 3 new regression tests in `tests/test_v130_redesign.py`: `test_pipeline_init_skill_references_askuserquestion`, `test_pipeline_init_skill_does_not_ban_askuserquestion`, `test_pipeline_init_procedure_uses_modal_gates`.
+
+**Operator impact:** `/pipeline-init` now feels the same as `/run` — every decision point is a one-click modal. No more "type APPROVE then hit enter, hope you typed it right."
+
+### Fixed — audit Pass 4 (Cluster D) — directive ↔ scope-lock field vocabulary
+
+`pipelines/directive-template.yaml`'s `preapproved.scope_lock` block used three field names that don't match `scripts/check_scope_lock.py`'s vocabulary — `current_rung_title` instead of `rung_title`, `proof_statement` instead of `proves`, `forbidden_future_rung_terms` instead of `forbidden_feature_terms_without_replan`. Because `directive_utils.compare_preapproved` uses exact dict-equality, a directive authored from this template against a scope-lock.yaml authored from `scope-lock-template.yaml` was structurally impossible to satisfy: `actual == expected` always returned False.
+
+- `pipelines/directive-template.yaml` + `skills/pipeline-init/references/pipeline-payload/pipelines/directive-template.yaml` (mirror): renamed the three diverged fields to match the canonical scope-lock-template vocabulary; added `required_modules: []` and `replan_required_if: [...]` so the directive's preapproved.scope_lock has the same top-level structure as a scope-lock.yaml copied from the other template.
+- `tests/test_directive_contract.py`: updated `SCOPE_LOCK` fixture to use canonical field names (drift here would have let the test pass while the real template was broken).
+- 3 new regression tests: `test_directive_template_scope_lock_uses_canonical_field_names` (rejects pre-Pass-4 names), `test_directive_template_scope_lock_fields_match_scope_lock_template` (asserts directive includes every scope-lock-template top-level key), `test_directive_template_mirror_matches_top_level` (pipeline-payload mirror lockstep).
+
+**Operator impact:** authors of new directives can now copy the directive-template's `preapproved.scope_lock` block alongside a scope-lock.yaml copied from `scope-lock-template.yaml` and have the comparison succeed. Pre-Pass-4 authors had to manually rename three fields to make their directive even possible to satisfy.
+
+### Fixed — audit Pass 3 (Cluster C) — wire v2.0 policy scripts into `run_all.py`
+
+`scripts/run_all.py` CHECKS list and the bundled payload mirror (`skills/pipeline-init/references/pipeline-payload/scripts/run_all.py`) were stale v1.x — none of the v2.0 policy scripts (directive conformance, scope-lock authority, rung-file-ownership, release-docs consistency, control-loop, execute readiness, decision-ledger) were invoked from the `policy` stage of any pipeline. The entire v2.0 enforcement layer was dead code from the orchestrator's perspective. The "heavier hand" pitch in this changelog was unrealized at the place that matters: the run skill flow.
+
+- `scripts/run_all.py`: added seven v2.0 entries to CHECKS, populated `CHECK_PREREQUISITES` mapping each v2.0 check to the run-dir artifact it depends on (e.g., `check_scope_lock` → `scope-lock.yaml`), and gated invocation on prerequisite presence — when absent the check is SKIPPED (counted as PASS for the policy gate) rather than FAILED. Version literal bumped from 1.3.1 → 2.0.0. Added v2.0 names to `run_consumers` so `--run` is passed through.
+- `skills/pipeline-init/references/pipeline-payload/scripts/run_all.py`: mirrored the top-level changes; also picked up the Pass 2 `find_repo_root` centralization (the mirror still had the local `_find_repo_root` helper).
+- 4 new regression tests in `tests/test_run_all_writes_policy_report.py`: `test_v20_checks_are_in_checks_list`, `test_v20_checks_have_prerequisites_mapped`, `test_v20_checks_skip_when_prereq_missing`, `test_pipeline_payload_run_all_matches_top_level`.
+
+**Operator impact:** policy stage now actually enforces v2.0 contracts for runs that opt in (i.e., runs whose `.agent-runs/<run-id>/` contains the relevant artifacts). v1.x runs that don't have those artifacts are unaffected — every v2.0 check skips with a `SKIP - <artifact> not present in run dir` line in `policy-report.md`. The conditional-skip preserves backwards-compat without requiring a project-level "v2.0 opt-in" flag.
+
+### Fixed — audit Pass 2 (Cluster B) — `find_repo_root` honors `CLAUDE_PROJECT_DIR`
+
+The Phase 6.c verification round fixed `show_run_status.py` to honor `CLAUDE_PROJECT_DIR` but the same-class bug lived in every other v2.0 script. Centralized the fix at `scripts/policy_utils.py:find_repo_root` (the helper now consults `CLAUDE_PROJECT_DIR` before falling back to script-relative discovery) so 16 scripts get the fix transitively.
+
+- `scripts/policy_utils.py` + `skills/pipeline-init/references/pipeline-payload/scripts/policy_utils.py` (mirror): resolution order is now (1) `CLAUDE_PROJECT_DIR`, (2) `<project>/scripts/policy/` installed layout, (3) `git rev-parse --show-toplevel`, (4) `script_dir.parent` last-resort. The mirror is the version that pipeline-init copies into operator projects, so it must stay in lockstep with the top-level (a regression test pins this).
+- Replaced local `_find_repo_root` helpers across 11 scripts with the centralized import: `auto_promote.py`, `check_allowed_paths.py`, `check_adr_gate.py`, `check_manifest_schema.py`, `check_no_todos.py`, `run_all.py`, `check_critic_evidence.py`, `check_stage_done.py`, `check_manifest_paths.py`, `check_manifest_immutable.py`, `check_manager_evidence.py`. `check_active_target.py` keeps its cwd-based intent unchanged (it's about the user's active target, not the project root).
+- `tests/test_check_manifest_schema.py::_run_schema`: also copies `policy_utils.py` into the isolated tmp_path/scripts/ now that the schema script imports from it.
+- Regression: `tests/test_policy_utils.py` (6 new tests) pins the env-var-first resolution order, the `.resolve()` normalization, the installed-layout fallback, the git fallback, the last-resort fallback, and the pipeline-payload mirror lockstep.
+
+**Operator impact:** scripts invoked outside the source tree (e.g., via Cowork from `.klodock` cwd, or by direct subprocess from anywhere) now resolve `.agent-runs/` and friends against the operator's project, not the plugin install cache. Symptoms that should disappear: false "no active run", scope-lock pass against the wrong file, directive-bind drift on resume.
+
+### Fixed — audit Pass 1 (Cluster A) — Mem0 OSS default port
+
+- `memory/config.py` (OssConfig dataclass default, env-fallback path, dict-parse path), `memory/adapter.py` (OssAdapter constructor default), `pipelines/mem0-config-template.json`, `skills/pipeline-init/references/pipeline-payload/pipelines/mem0-config-template.json`, `schemas/mem0.config.v1.json`, `tests/test_memory_layer.py`: changed default `oss.base_url` from `http://localhost:3000` (the dashboard) to `http://localhost:8888` (the FastAPI server per the vendor `docker-compose.yaml`). The mem0 SDK's `Memory(base_url=...)` expects the API; pointing it at the dashboard silently returns 404 HTML and the circuit breaker masks it.
+- `scripts/mem0_bootstrap.py cmd_test`: `policy.list_entities()` swallows backend exceptions and returns `{"error": "..."}`; cmd_test now treats that shape as rc=2 (was: rc=0 because no exception fired). Operators get a useful error when the URL is wrong.
+- `USER-MANUAL.md` and `skills/mem0/SKILL.md`: added a port table documenting which host port is the API vs the dashboard, and a migration note for operators who scaffolded `.mem0/config.json` before this fix.
+- Regression: `tests/test_memory_layer.py::test_oss_config_default_port_is_api` pins `OssConfig().base_url == "http://localhost:8888"` and the canonical template's `oss.base_url`. Any future change to either default will fail the test.
+
+**Operator action on upgrade:** if you already ran `mem0 init` against the pre-fix template, your `.mem0/config.json` still has the wrong port. Re-run `python scripts/mem0_bootstrap.py init --mode oss --force` or hand-edit `oss.base_url` to `http://localhost:8888`.
+
+## [2.0.0] — 2026-05-17
+
+**Heavier-hand redesign.** Takes the opposite direction from PR #22 (closed 2026-05-17) which collapsed gates and removed enforcement. v2.0 keeps the gates and adds enforcement everywhere — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval, scope-lock authority, intake skill, persistent file-backed run memory, and an MCP Mem0 layer for cross-session continuity. Codex stays lighter; claude takes the heavier hand because Claude historically loses focus mid-run and the runtime needs to catch it.
+
+191 tests, 1 skipped (cleanroom_e2e), all green at HEAD `9634929`. Branch `v2.0-heavier-hand`. (The audit Pass 11 sweep corrected this number from a stale "171" — the actual count at the v2.0.0 commit was 191.)
+
+### Added — Phase 1: foundation policy ports (from agent-pipeline-codex v0.9.0)
+
+- `scripts/policy_utils.py` — find_repo_root, strip_yaml_comment, unsupported_yaml_constructs.
+- `scripts/scope_lock_utils.py` — release-plan rung parser, normalize_text, changed_paths, head_commit_subject.
+- `scripts/check_scope_lock.py` — `SCOPE_CONFLICT` when manifest doesn't match the canonical release-plan rung's title / proves / required_modules / scope_bullets / exit_criteria.
+- `scripts/check_rung_file_ownership.py` — `SCOPE_CONFLICT` on edited paths or commit messages containing forbidden future-rung terms.
+- `scripts/check_release_docs_consistency.py` — `SCOPE_CONFLICT` when README/CHANGELOG/docs attribute the current rung to forbidden future-rung work.
+- `scripts/check_execute_readiness.py` — blocks policy/verify when execute did not declare full DoD readiness with parseable zero-blocker checklist.
+- `scripts/check_decision_ledger.py` — validates schema-v1 NDJSON rows for `decision-ledger.ndjson`.
+- `scripts/check_pipeline_control_loop.py` — validates `active-control-state.md` against the VALID/INVALID stop-condition contract; flags unresolved Open Caveats / Release Risks sections.
+- `scripts/stop_validator.py` — shared stop-condition truth function used by every control gate. Per-stop-condition evidence validation (human gates against pipeline resume; scope conflicts against scope-lock receipt; failed-gate against run.log; credential/destructive/external/user-paused against text signals).
+- `scripts/final_response_gate.py` — pre-final-response gate; discovers active control-state files and blocks any final response while `final_response_allowed: false`.
+- `scripts/pipeline_continue.py` — prints the next executable action (CONTINUE or STOP_ALLOWED).
+- `scripts/agent_decision_gate.py` — validates agent stop/defer/skip/final decisions against control-state, evidence files, and scope-lock canonical rung. Writes `decision-ledger.ndjson` rows when `--write-ledger`.
+- `scripts/show_run_status.py` + `skills/show-run-status/` — read-only summary of a run.
+- `pipelines/scope-lock-template.yaml` — new run template.
+
+### Added — Phase 2: directive contracts (codex v0.6 + PR #5 amendments)
+
+- `scripts/directive_utils.py` — DirectiveContext, AssertionResult, load_directive, sha256_file, ensure_hash_integrity, compare_preapproved (unified-diff output), evaluate_assertions (regex/contains/section/artifact_exists/callable; callable names restricted to local public names, no dotted paths, no leading underscore).
+- `scripts/check_directive_conformance.py` — Phase A2.6 gate. Returns 0 on AUTO_APPROVE (writes directive-bound line), 1 on NO_DIRECTIVE / MISMATCH / malformed, 2 on hash-changed-since-bind, 3 on CONTRACT_DIVERGED when directive was previously bound but artifacts now diverge. PR #5 amendments all present: **bind-after-conformance**, **append-not-prepend**, **exit-3 CONTRACT_DIVERGED on resume mismatch**.
+- `scripts/check_plan_against_directive.py` — plan-gate auto-approval based on directive `acceptance.plan` assertions. **Downstream re-verifies manifest/scope conformance** (PR #5 amendment) — exits 2 on CONTRACT_DIVERGED.
+- `pipelines/directive-template.yaml` — scaffold template with documented schema.
+- `scripts/auto_promote.py` extended — adds `_check_directive_manager` which re-verifies manifest + scope-lock conformance (defense-in-depth) and evaluates `acceptance.manager` assertions. Two module-level callable helpers exposed for directive YAML reference: `no_unresolved_open_caveats`, `verifier_covers_manifest_expected_outputs`. **Claude's v1.3.1 vacuous-pass for docs-only runs is preserved unchanged.**
+
+### Added — Phase 3: intake skill (codex v0.8 port)
+
+- `skills/intake/` — `/agent-pipeline-claude:intake` captures plain-English product/repo/design/task/bug/feature descriptions and drafts `.agent-runs/<run-id>/intake.md`, `manifest.yaml`, `scope-lock.yaml`, and `intake-questions.md` without starting the pipeline. Soft onboarding doorway for ideas that don't have a manifest yet.
+
+### Added — Phase 4: lifecycle hooks + persistent file-backed run memory
+
+- `hooks/hook_runner.py` + `hooks/hook_utils.py` + `hooks/hooks.json` — **eleven Cowork lifecycle events** (codex v0.9 ships six; claude takes the heavier hand):
+    * SessionStart — inject active run context + memory handoff
+    * UserPromptSubmit — warn on stale skill names, block bypass attempts
+    * PreToolUse — classify tool risk; deny destructive / out-of-scope
+    * PermissionRequest — auto-deny dangerous; auto-allow when directive-bound
+    * PostToolUse — corrective context after failed tools
+    * **PostToolUseFailure** — dedicated failure recording with severity=high (claude-only)
+    * **PreCompact** — snapshot memory before context compaction (claude-only)
+    * **PostCompact** — re-inject handoff_current.md after compaction (claude-only)
+    * **SubagentStop** — record subagent completion to memory (claude-only)
+    * Stop — block invalid pipeline stops
+    * **SessionEnd** — final memory flush + Phase 5 Mem0 attachment point (claude-only)
+- Persistent file-backed memory under `.agent-runs/<run-id>/memory/`:
+    * `events.jsonl` — all events (catch-all)
+    * `turns.jsonl` — UserPromptSubmit
+    * `decisions.jsonl` — PreToolUse, PermissionRequest
+    * `open_loops.jsonl` — PostToolUse, PostToolUseFailure, Stop
+    * `memory_probe.log` — per-event probe log
+    * `handoff_current.md` — regenerated on every record; SessionStart and PostCompact inject this as context
+- Record schema: `{timestamp, event, run_id, stage, message <=1200 chars, metadata}`. Mirrors codex v0.9 verbatim for forward-compat with the codex Mem0 reader (PRD §4.2).
+- Hook commands resolve `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PROJECT_DIR}` (Cowork roots cwd at `.klodock` — env var is the right answer per the Cowork-hooks research and the existing memory note).
+
+### Added — Phase 5: Mem0 MCP memory layer (cross-session)
+
+Two-layer architecture per PRD:
+
+- **Layer A** (file-backed): `.agent-runs/<run-id>/memory/*.jsonl`. Unconditional. Written by hooks. Source of truth for within-run state.
+- **Layer B** (Mem0): managed Platform OR self-hosted OSS. Best-effort. Behind a circuit breaker. Source of truth for cross-session knowledge.
+
+New `memory/` package:
+
+- `memory/config.py` — `Mem0Config` + `load_config()`. Reads `.mem0/config.json` with env-only fallback (`MEM0_MODE` + `MEM0_API_KEY` or `MEM0_BASE_URL`). Returns `enabled=False` when neither present (Layer A keeps working).
+- `memory/identity.py` — `derive_identity()` implements PRD §5.2: `user_id = sha256(git user.email)[:16]` (no PII leak), `agent_id = "claude-code"`, `app_id = slug(git remote)`, `run_id = "{branch}-{short-sha}-{epoch}"`.
+- `memory/redaction.py` — `scrub()` per FR-11. Default patterns cover `sk-` / `m0-` / `gh[pousr]-` tokens, AWS access keys, BEGIN PRIVATE KEY, Bearer tokens. Default block paths: `~/.ssh`, `~/.aws`, `~/.config/gcloud`, `~/.kube/config`. **Fail-closed on malformed regex** (loses memory, never leaks secret).
+- `memory/adapter.py` — `MemoryAdapter` ABC + `NullAdapter` (used when disabled — callers never branch on enable/disable) + `PlatformAdapter` (lazy-imports `mem0ai.MemoryClient`) + `OssAdapter` (lazy-imports `mem0ai.Memory`). **`delete*` operations require `allowed_by_prune=True`** per FR-8 — the agent can never call delete directly.
+- `memory/policy.py` — `PolicyLayer` enforces:
+    * FR-6 entity scoping (writes carry user_id+agent_id+app_id+run_id; searches default to user_id+app_id; `--cross-repo` opt-in)
+    * FR-7 metadata taxonomy: closed-set `type` values `{decision, task_learning, anti_pattern, user_preference, environmental, convention, session_state}`. Unknown types rejected at the policy layer.
+    * FR-9 token-budget cap (1200 default; 1.5x overflow at session_start)
+    * FR-10 latency tracker — auto-disables prompt injection after 5 consecutive p95 violations (preserves session-start retrieval)
+    * FR-11 redaction (every write candidate scrubbed)
+    * FR-13 circuit breaker — 5 consecutive failures opens for 5 minutes; writes go to local outbox at `.mem0/outbox/`; reads return empty
+    * FR-14 consent gate — platform mode requires `.mem0/consent.json` with `grant: true` before any backend write
+- `memory/sync.py` — `flush_layer_a_to_mem0()` walks events.jsonl, picks records with valid `type`, forwards via PolicyLayer.add. Idempotent per record fingerprint (sha256 tracked in `.mem0/synced-hashes.txt`).
+
+New schema + template + CLI + skill:
+
+- `schemas/mem0.config.v1.json` — full JSON Schema with descriptions, defaults, enum constraints.
+- `pipelines/mem0-config-template.json` — starting config (`mem0 init` writes from this).
+- `scripts/mem0_bootstrap.py` — 7 subcommands: `init` / `up` / `down` / `whoami` / `test` / `sync` / `prune`.
+- `skills/mem0/SKILL.md` — `/agent-pipeline-claude:mem0 <subcommand>` operator-facing skill.
+
+### Added — tests
+
+- 8 new test files: `test_scope_lock.py`, `test_execute_readiness.py`, `test_decision_ledger.py`, `test_show_run_status.py`, `test_directive_contract.py` (11 tests including the 4 PR #5 amendment tests), `test_hooks.py` (18 tests, 12 ported + 6 for new handlers), `test_memory_layer.py` (27 tests covering every FR).
+- Existing 102 v1.3.1 tests preserved unchanged (vacuous-pass, scaffold integrity, cleanroom install, v1.3.0 redesign contract, etc.).
+- Two regression fixes on existing tests: `test_v130_redesign` regex widened to accept 2.x successors; `test_cleanroom_install` charset includes U+221A (Cowork on Windows renders the loaded-status checkmark as that codepoint).
+
+### Removed (breaking)
+
+Reused PR #22's `v2.0.0` label but reversed its direction:
+
+- **None** of v1.3.1's gates were removed. Manifest gate, plan gate, manager gate all preserved (manager auto-fires on green per v1.3.0).
+- v1.3.0 deprecated stubs (`grant-autonomous`, `run-autonomous` skills; `check_autonomous_compliance`, `check_autonomous_mode` scripts) preserved as no-op shims for backward compat — same behavior as v1.3.1.
+
+### Security / Safety
+
+- **Failure mode closed (heavier-hand intent):** Pipeline state is now durable across context compaction and session boundaries. The runtime no longer depends on the model remembering the orchestrator markdown through a long session — hooks observe every load-bearing point and write persistent records.
+- **Failure mode closed (directive):** Directive-conformant runs no longer force operators to re-type APPROVE for manifest/plan content they already authored verbatim. Reduces reflexive-approval training without weakening the gate contract.
+- **Failure mode closed (intake):** Operators no longer have to choose between a blank `new-run` skeleton and asking the model to improvise work without a manifest. `intake` provides a friendly drafting step while preserving the rule that execution starts only after manifest review.
+- **Failure mode closed (cross-session memory):** Sessions in week 2 can recall decisions from week 1 via Mem0. Decision drift across long-running projects is now mitigated at the runtime layer, not the human-discipline layer.
+- **Honest limit:** Mem0 writes are best-effort and never block the agent's response. The circuit breaker opens after 5 consecutive failures and writes go to a local outbox at `.mem0/outbox/` for next-session retry.
+- **Honest limit:** Platform mode requires explicit consent grant in `.mem0/consent.json`. OSS mode is the default for first-time users on privacy grounds.
+- **Honest limit:** The agent never calls `delete_*` operations directly. All deletes go through `pipeline mem0 prune` with explicit human confirmation.
+
 ## [1.3.1] — 2026-05-14
 
 **Remove two false-stops that block hands-off auto-promote.**

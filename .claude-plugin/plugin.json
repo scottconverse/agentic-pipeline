@@ -3,7 +3,7 @@
       "email" : "sconverse@gmail.com",
       "name" : "Scott Converse"
    },
-   "description" : "Run multi-step Claude Code work without drift. Plugin reads your project's spec and drafts a per-run scope contract; you click APPROVE on a modal gate. Then research → plan → execute → verify → critique runs end-to-end with three fast modal gates, an opt-in real-time judge, and evidence-driven auto-promote (when checks are clean, the manager gate skips automatically). One namespaced skill (/agent-pipeline-claude:run); no YAML to hand-author; no grant files.",
+   "description" : "Run multi-step Claude Code work without drift. v2.0 adds hooks-based enforcement (11 Cowork lifecycle events), directive-contract pre-approval, scope-lock authority, intake skill, persistent run memory, and an MCP Mem0 layer for cross-session continuity. Three modal gates plus hook-layer enforcement: SessionStart/UserPromptSubmit/PreToolUse/PermissionRequest/PostToolUse/PostToolUseFailure/PreCompact/PostCompact/SubagentStop/Stop/SessionEnd. Codex stays lighter; Claude takes the heavier hand.",
    "homepage" : "https://github.com/scottconverse/agent-pipeline-claude",
    "keywords" : [
       "agent",
@@ -17,5 +17,5 @@
    "license" : "Apache-2.0",
    "name" : "agent-pipeline-claude",
    "repository" : "https://github.com/scottconverse/agent-pipeline-claude.git",
-   "version" : "1.3.1"
+   "version" : "2.0.0"
 }

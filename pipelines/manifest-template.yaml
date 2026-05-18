@@ -49,12 +49,28 @@ pipeline_run:
   # Do not remove any of these from a real run; if a gate is genuinely
   # not applicable, write the reason in non_goals and let the verifier
   # mark it NOT APPLICABLE.
+  #
+  # v2.0 also recognizes (conditional on the corresponding artifact
+  # existing in the run dir — run_all.py uses the CHECK_PREREQUISITES
+  # table to skip-when-absent rather than fail-when-absent):
+  #
+  #   - directive_bound          (when .agent-runs/<id>/directive.yaml)
+  #   - scope_lock_authority     (when .agent-runs/<id>/scope-lock.yaml)
+  #   - execute_readiness        (when .agent-runs/<id>/implementation-report.md)
+  #
+  # If your run opts into the v2.0 enforcement surface (e.g. you author
+  # a directive.yaml or scope-lock.yaml), add the matching gate here so
+  # the verifier-report.md tracks it. Runs that don't opt in keep the
+  # v1.x five-gate set and pass through cleanly.
   required_gates:
     - human_approval_manifest
     - human_approval_plan
     - policy_passed
     - tests_passed
     - human_approval_merge
+    # - directive_bound          # uncomment when authoring directive.yaml
+    # - scope_lock_authority     # uncomment when authoring scope-lock.yaml
+    # - execute_readiness        # uncomment when producing implementation-report.md
 
   # Risk: low | medium | high. Drives how aggressively the verifier and
   # manager scrutinize cross-cutting concerns.

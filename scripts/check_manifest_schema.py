@@ -50,21 +50,13 @@ AUTHORIZING_SOURCE_PATTERN = re.compile(
 )
 
 
-def _find_repo_root() -> Path:
-    """Resolve the repo root regardless of which supported layout the
-    script is running from. Same logic as check_no_todos.py.
-
-    Two supported layouts:
-      * Plugin source: ``<repo>/scripts/check_manifest_schema.py``.
-      * Installed:    ``<repo>/scripts/policy/check_manifest_schema.py``.
-    """
-    script_dir = Path(__file__).resolve().parent
-    if script_dir.name == "policy" and script_dir.parent.name == "scripts":
-        return script_dir.parents[1]
-    return script_dir.parent
+try:
+    from policy_utils import find_repo_root
+except ModuleNotFoundError:  # pragma: no cover - installed layout
+    from scripts.policy_utils import find_repo_root
 
 
-REPO_ROOT = _find_repo_root()
+REPO_ROOT = find_repo_root(__file__)
 RUN_DIR = REPO_ROOT / ".agent-runs"
 
 
@@ -397,9 +389,10 @@ def _check(fields: dict[str, object]) -> list[dict[str, str]]:
                 "problem": f"unknown value {gate_policy!r}; expected 'human' or 'autonomous'",
                 "current": _short_repr(gate_policy),
                 "suggest": (
-                    "set to 'human' (default; three gates require chat-APPROVE) or "
-                    "'autonomous' (requires a valid autonomous_grant; gates marked "
-                    "v1.3.0: modal gates fire via AskUserQuestion)."
+                    "v1.3.0+ retired the gate_policy field entirely. The three human "
+                    "gates (manifest, plan, manager) fire as one-click AskUserQuestion "
+                    "modals; manager auto-fires on green evidence. Remove the "
+                    "gate_policy line — no replacement value is needed."
                 ),
             }
         )

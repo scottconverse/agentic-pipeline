@@ -2,11 +2,29 @@
 
 **Ship multi-step Claude Code work that doesn't drift.**
 
-The plugin reads your project's spec, drafts a per-run scope contract from it, and asks you to APPROVE in chat. Then it runs research → plan → execute → verify → critique end-to-end with three human gates, an opt-in real-time judge, and machine-checkable auto-promote.
+The plugin reads your project's spec, drafts a per-run scope contract from it, and asks you to APPROVE in a one-click `AskUserQuestion` modal. Then it runs research → plan → execute → verify → critique end-to-end with three modal human gates, an opt-in real-time judge, and machine-checkable auto-promote.
 
 One namespaced skill. No YAML for you to hand-author.
 
-**Current release: v1.1.0** · [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
+**Current release: v2.0.0** — heavier-hand redesign with hooks-based enforcement, directive contracts, intake skill, persistent file-backed run memory, and an MCP Mem0 layer for cross-session continuity. [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
+
+## What's new in v2.0.0
+
+v2.0 takes the opposite direction from PR #22 (closed): instead of collapsing gates and removing enforcement, it **adds enforcement everywhere**:
+
+- **Eleven Cowork lifecycle hooks** observe every load-bearing event (SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, SubagentStop, Stop, SessionEnd). They block destructive commands, deny out-of-scope writes during active runs, warn on release operations, and refuse invalid pipeline stops.
+- **Persistent file-backed run memory** under `.agent-runs/<run-id>/memory/`. Hooks write to it on every event. The `handoff_current.md` is re-injected as context on SessionStart and PostCompact — pipeline state is durable across context compaction.
+- **Directive contracts** (`.agent-runs/<run-id>/directive.yaml`) let operators pre-approve manifest and scope-lock content with a SHA-256-bound hash. Conformant runs auto-approve the manifest and plan gates; tampering surfaces explicitly.
+- **Intake skill** (`/agent-pipeline-claude:intake`) drafts starter artifacts from plain English without touching the pipeline. Soft onboarding for ideas that don't yet have a manifest.
+- **Mem0 MCP layer** for cross-session continuity. Two-layer architecture — Layer A (file-backed) is unconditional; Layer B (Mem0) is best-effort behind a circuit breaker. OSS-default, Platform behind explicit consent grant. Sessions in week 2 can recall decisions from week 1.
+- **Scope-lock authority** (`scripts/check_scope_lock.py`, `check_rung_file_ownership.py`, `check_release_docs_consistency.py`) blocks work that drifts off the canonical release-plan rung.
+- **DoD readiness gate** (`scripts/check_execute_readiness.py`) blocks policy/verify until the executor declares full Definition-of-Done readiness with a parseable zero-blocker checklist.
+
+Codex stays lighter; claude takes the heavier hand because Claude historically loses focus mid-run and the runtime needs to catch it.
+
+---
+
+
 
 ---
 
@@ -42,10 +60,10 @@ pipeline_run:
   ...
 ```
 
-Reply APPROVE to start, or describe what to change.
+Use the APPROVE / Adjust modal that appears next, or describe what to change.
 ```
 
-You read it, reply `APPROVE`, and the pipeline runs. Three human gates along the way (manifest, plan, manager-decision), each in chat. The last one auto-fires when six machine-checkable conditions pass. Final result lands in `.agent-runs/<run-id>/` as a structured paper trail.
+You read the orientation summary in chat, then click APPROVE in the modal that fires immediately after. The pipeline runs. Three human gates along the way (manifest, plan, manager-decision), each a one-click `AskUserQuestion` modal. The last one auto-fires when the six machine-checkable conditions pass. Final result lands in `.agent-runs/<run-id>/` as a structured paper trail.
 
 That's it. No two-step new-run + run-pipeline. No blank YAML to fill in.
 
@@ -173,7 +191,7 @@ The `CLAUDE.md` starter is short and includes a `## Pipeline drafter notes` sect
 /agent-pipeline-claude:run "short description of the work"
 ```
 
-That's the whole command. The drafter reads your project, drafts the manifest, shows it in chat. You reply `APPROVE` to start, or describe changes.
+That's the whole command. The drafter reads your project, drafts the manifest, shows it in chat. An `AskUserQuestion` modal fires with `APPROVE` / `Adjust` / `BLOCK` — one click to start, or describe changes via the Adjust option.
 
 ### Other shapes
 
@@ -185,11 +203,11 @@ That's the whole command. The drafter reads your project, drafts the manifest, s
 
 ## The three human gates
 
-Each is a chat-message decision moment. Three universal verbs: `APPROVE` to accept, `REPLAN <description>` (or `<description>`) to revise, or — at the manager gate — `BLOCK` to halt.
+Each fires as a one-click `AskUserQuestion` modal. Three universal verbs as modal options: `APPROVE` to accept, `REPLAN` (with optional free-form description in the modal's text field) to revise, or — at the manager gate — `BLOCK` to halt. v1.3.0 retired the v0.5.x chat-text gate; v2.0 keeps the modal flow and adds the hook layer underneath.
 
-1. **Manifest gate.** The drafted scope contract. You review YAML in chat and APPROVE or describe changes. The drafter loops on revision (max 5 cycles before falling back to a hand-edit prompt).
-2. **Plan gate.** After research → plan, you see the planner's plan summary inline + a count of files in the blast radius + a list of open questions. APPROVE or REPLAN.
-3. **Manager gate.** After everything else completes, the manager produces a PROMOTE / BLOCK / REPLAN recommendation citing the verifier, drift-detector, and critic findings verbatim. APPROVE / BLOCK / REPLAN.
+1. **Manifest gate.** The drafted scope contract. You review YAML in chat, then click APPROVE in the modal that fires immediately after. Describe changes via REPLAN to loop on revision (max 5 cycles before falling back to a hand-edit prompt).
+2. **Plan gate.** After research → plan, you see the planner's plan summary inline + a count of files in the blast radius + a list of open questions. Click APPROVE or REPLAN in the modal.
+3. **Manager gate.** After everything else completes, the manager produces a PROMOTE / BLOCK / REPLAN recommendation citing the verifier, drift-detector, and critic findings verbatim. Click APPROVE / BLOCK / REPLAN in the modal.
 
 When the auto-promote stage's six conditions all pass, the manager gate auto-fires (PROMOTE) and no human prompt appears. The run reports DONE-PROMOTED in its final summary.
 
@@ -305,9 +323,9 @@ If you skipped v1.0 and are upgrading directly from v0.5.x:
 
 - `/new-run` + `/run-pipeline` two-step is gone. Use `/agent-pipeline-claude:run "<description>"`.
 - Manifest is drafted from your project's spec; you no longer hand-author 11 fields from blank.
-- All three human gates are chat messages (APPROVE / REPLAN / BLOCK), not modal popups.
+- All three human gates are `AskUserQuestion` modal prompts (APPROVE / REPLAN / BLOCK as labels — one click each). The v0.5.x free-form chat-APPROVE ceremony was retired in v1.3.0.
 
-Run `cd ~/.claude/plugins/marketplaces/agent-pipeline-claude && git pull && git checkout v1.1.0` to upgrade, then fully restart Cowork. See [CHANGELOG.md](CHANGELOG.md) for full migration notes.
+Run `cd ~/.claude/plugins/marketplaces/agent-pipeline-claude && git pull && git checkout v2.0.0` to upgrade, then fully restart Cowork. See [CHANGELOG.md](CHANGELOG.md) for full migration notes.
 
 ## Contributing
 

@@ -23,6 +23,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_SCRIPT = REPO_ROOT / "scripts" / "check_manifest_schema.py"
+POLICY_UTILS_SCRIPT = REPO_ROOT / "scripts" / "policy_utils.py"
 
 
 def _make_fixture_run(
@@ -46,14 +47,22 @@ def _make_fixture_run(
 def _run_schema(tmp_path: Path, run_id: str = "test-run") -> subprocess.CompletedProcess[str]:
     """Invoke the schema script as a subprocess.
 
-    The script computes REPO_ROOT from its own path; we copy it into a
-    tmp_path-rooted layout so .agent-runs/ resolves correctly.
+    The script computes REPO_ROOT from its own path; we copy it (and its
+    policy_utils sibling, which provides the centralized find_repo_root
+    helper) into a tmp_path-rooted layout so .agent-runs/ resolves there.
     """
-    # Copy the script into the tmp layout so REPO_ROOT resolves there.
+    # Copy the script + its policy_utils sibling so the import succeeds.
+    # check_manifest_schema imports `from policy_utils import find_repo_root`;
+    # the centralized helper is the single source of truth that also honors
+    # CLAUDE_PROJECT_DIR (audit Pass 2 / Cluster B).
     tmp_scripts = tmp_path / "scripts"
     tmp_scripts.mkdir(exist_ok=True)
     tmp_script = tmp_scripts / "check_manifest_schema.py"
     tmp_script.write_text(SCHEMA_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_scripts / "policy_utils.py").write_text(
+        POLICY_UTILS_SCRIPT.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
     return subprocess.run(
         [sys.executable, str(tmp_script), "--run", run_id],

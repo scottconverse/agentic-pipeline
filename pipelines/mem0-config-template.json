@@ -1,0 +1,68 @@
+{
+  "$schema": "https://agent-pipeline-claude.dev/schemas/mem0.config.v1.json",
+  "mode": "oss",
+  "project": "default",
+  "platform": {
+    "api_key_env": "MEM0_API_KEY",
+    "endpoint": "https://api.mem0.ai",
+    "mcp_endpoint": "https://mcp.mem0.ai/mcp/"
+  },
+  "oss": {
+    "base_url": "http://localhost:8888",
+    "compose_dir": "./vendor/mem0/server",
+    "admin_api_key_env": "MEM0_ADMIN_API_KEY"
+  },
+  "identity": {
+    "user_id_strategy": "hash_git_email",
+    "agent_id": "claude-code",
+    "app_id_strategy": "slug_git_remote",
+    "run_id_strategy": "branch_sha_epoch"
+  },
+  "retrieval": {
+    "top_k": 10,
+    "token_budget": 1200,
+    "session_start_overflow": 1.5,
+    "enable_prompt_injection": true,
+    "min_prompt_chars": 20,
+    "latency_budget_ms": {
+      "p50": 150,
+      "p95": 400,
+      "session_start": 1500
+    }
+  },
+  "writes": {
+    "allowed_types": [
+      "decision",
+      "task_learning",
+      "anti_pattern",
+      "user_preference",
+      "environmental",
+      "convention",
+      "session_state"
+    ],
+    "agent_can_delete": false,
+    "agent_can_update": true
+  },
+  "redaction": {
+    "secret_patterns": [
+      "(?:sk|m0|gh[pousr])-[A-Za-z0-9_-]{20,}",
+      "-----BEGIN [A-Z ]+PRIVATE KEY-----",
+      "\\bAKIA[0-9A-Z]{16}\\b",
+      "\\bBearer\\s+[A-Za-z0-9._-]{20,}"
+    ],
+    "block_paths": ["~/.ssh", "~/.aws", "~/.config/gcloud", "~/.kube/config"]
+  },
+  "hygiene": {
+    "prune_run_id_after_days": 7,
+    "prune_session_state_after_days": 30,
+    "review_long_lived_after_days": 180
+  },
+  "circuit_breaker": {
+    "consecutive_failures": 5,
+    "open_seconds": 300
+  },
+  "consent": {
+    "platform_requires_consent": true,
+    "consent_file": ".mem0/consent.json"
+  }
+}

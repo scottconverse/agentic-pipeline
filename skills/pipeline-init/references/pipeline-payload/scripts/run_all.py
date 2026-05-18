@@ -30,24 +30,27 @@ import sys
 from pathlib import Path
 
 
-def _find_repo_root() -> Path:
-    """Resolve the repo root for both supported layouts.
-
-    * Plugin source: ``<repo>/scripts/run_all.py`` → parent of scripts/.
-    * Installed:     ``<repo>/scripts/policy/run_all.py`` → two up.
-    """
-    script_dir = Path(__file__).resolve().parent
-    if script_dir.name == "policy" and script_dir.parent.name == "scripts":
-        return script_dir.parents[1]
-    return script_dir.parent
+try:
+    from policy_utils import find_repo_root
+except ModuleNotFoundError:  # pragma: no cover - installed layout
+    from scripts.policy_utils import find_repo_root
 
 
 THIS_DIR = Path(__file__).resolve().parent
-REPO_ROOT = _find_repo_root()
+REPO_ROOT = find_repo_root(__file__)
 RUN_DIR_BASE = REPO_ROOT / ".agent-runs"
 
 # Order matters only for human readability of the combined report.
 # Add project-specific checks here (e.g., a custom check_module_boundaries.py).
+#
+# v2.0 wires the directive / scope-lock / control-loop / readiness /
+# decision-ledger checks into the policy stage so they actually fire
+# during a normal `/agent-pipeline-claude:run` (audit ENG-003). Each
+# v2.0 check carries a prerequisite-artifact entry in
+# CHECK_PREREQUISITES — when the artifact is absent from the run dir,
+# the check is reported SKIP (PASS) rather than FAIL. This lets v1.x
+# runs that don't opt into v2.0 enforcement pass through cleanly while
+# v2.0-enabled runs get the full gate.
 CHECKS: list[tuple[str, list[str]]] = [
     ("check_manifest_schema", ["check_manifest_schema.py"]),
     # v1.2.0: cross-stage integrity — manifest SHA must match the pin
@@ -62,7 +65,32 @@ CHECKS: list[tuple[str, list[str]]] = [
     # autonomous grant correctly (no chat-wait messages slipping through,
     # no forbidden actions in run.log). Silent skip for HUMAN-MODE runs.
     ("check_autonomous_compliance", ["check_autonomous_compliance.py"]),
+    # v2.0 enforcement layer — conditional on the run opting in
+    # (prerequisite artifact must exist; see CHECK_PREREQUISITES).
+    ("check_directive_conformance", ["check_directive_conformance.py"]),
+    ("check_scope_lock", ["check_scope_lock.py"]),
+    ("check_rung_file_ownership", ["check_rung_file_ownership.py"]),
+    ("check_release_docs_consistency", ["check_release_docs_consistency.py"]),
+    ("check_pipeline_control_loop", ["check_pipeline_control_loop.py"]),
+    ("check_execute_readiness", ["check_execute_readiness.py"]),
+    ("check_decision_ledger", ["check_decision_ledger.py"]),
 ]
+
+# Maps check name -> relative path under <RUN_DIR_BASE>/<run-id>/ that
+# must exist for the check to be invoked. When the prerequisite is
+# absent the check is SKIPPED (counted as PASS for the policy gate),
+# never invoked. The conditional-skip pattern lets v2.0 enforcement
+# stay opt-in: a project that hasn't authored a scope-lock.yaml yet
+# isn't blocked from passing policy on every run.
+CHECK_PREREQUISITES: dict[str, str] = {
+    "check_directive_conformance": "directive.yaml",
+    "check_scope_lock": "scope-lock.yaml",
+    "check_rung_file_ownership": "scope-lock.yaml",
+    "check_release_docs_consistency": "scope-lock.yaml",
+    "check_pipeline_control_loop": "active-control-state.md",
+    "check_execute_readiness": "implementation-report.md",
+    "check_decision_ledger": "decision-ledger.ndjson",
+}
 
 
 def _run(check_name: str, script_args: list[str], extra_args: list[str]) -> tuple[bool, str]:
@@ -72,10 +100,30 @@ def _run(check_name: str, script_args: list[str], extra_args: list[str]) -> tupl
     return proc.returncode == 0, output.rstrip()
 
 
+def _prerequisite_present(check_name: str, run_id: str | None) -> tuple[bool, str]:
+    """Return (present, message).
+
+    When ``check_name`` is in ``CHECK_PREREQUISITES``:
+      * If no run id, the prerequisite cannot be checked → report
+        absent (skip with reason).
+      * If the prerequisite file is missing from the run dir → absent.
+    When ``check_name`` has no prerequisite entry → present (always run).
+    """
+    prereq = CHECK_PREREQUISITES.get(check_name)
+    if prereq is None:
+        return True, ""
+    if not run_id:
+        return False, f"no --run argument (cannot check for {prereq})"
+    candidate = RUN_DIR_BASE / run_id / prereq
+    if candidate.exists():
+        return True, ""
+    return False, f"{prereq} not present in run dir"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--version", action="version", version="agent-pipeline-claude 1.3.1"
+        "--version", action="version", version="agent-pipeline-claude 2.0.0"
     )
     parser.add_argument(
         "--run",
@@ -91,10 +139,23 @@ def main() -> int:
         "check_manifest_immutable",
         "check_stage_done",
         "check_autonomous_compliance",
+        # v2.0 checks all consume --run; conditional-skip prevents
+        # spurious failures when the prereq artifact is absent.
+        "check_directive_conformance",
+        "check_scope_lock",
+        "check_rung_file_ownership",
+        "check_release_docs_consistency",
+        "check_pipeline_control_loop",
+        "check_execute_readiness",
+        "check_decision_ledger",
     }
 
     results: list[tuple[str, bool, str]] = []
     for name, script_args in CHECKS:
+        present, skip_reason = _prerequisite_present(name, args.run)
+        if not present:
+            results.append((name, True, f"SKIP - {skip_reason}"))
+            continue
         extra = extra_for_run_consumers if name in run_consumers else []
         passed, output = _run(name, script_args, extra)
         results.append((name, passed, output))

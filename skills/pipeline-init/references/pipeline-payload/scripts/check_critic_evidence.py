@@ -41,6 +41,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from policy_utils import find_repo_root
+except ModuleNotFoundError:  # pragma: no cover - installed layout
+    from scripts.policy_utils import find_repo_root
+
 
 # Lens names the critic must walk. Order doesn't matter for the check;
 # all six must be PRESENT and each must have findings or evidence.
@@ -75,14 +80,6 @@ class LensSection:
     has_findings: bool
     evidence_block_present: bool
     citations_found: list[str]
-
-
-def _find_repo_root() -> Path:
-    p = Path.cwd().resolve()
-    for parent in (p, *p.parents):
-        if (parent / ".git").exists() or (parent / "pyproject.toml").exists():
-            return parent
-    return p
 
 
 def _split_lens_sections(report_text: str) -> list[LensSection]:
@@ -193,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    repo_root = _find_repo_root()
+    repo_root = find_repo_root(__file__)
     if args.report:
         report_path = args.report.resolve()
     elif args.run:

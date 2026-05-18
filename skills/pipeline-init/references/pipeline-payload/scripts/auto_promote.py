@@ -49,6 +49,25 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    from directive_utils import (
+        DirectiveError,
+        compare_preapproved,
+        ensure_hash_integrity,
+        evaluate_assertions,
+        load_directive,
+    )
+    from policy_utils import find_repo_root
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from scripts.directive_utils import (
+        DirectiveError,
+        compare_preapproved,
+        ensure_hash_integrity,
+        evaluate_assertions,
+        load_directive,
+    )
+    from scripts.policy_utils import find_repo_root
+
 CRITERIA_LINE_RE = re.compile(
     r"\*\*Criteria:\s*(\d+)\s+total,\s*(\d+)\s+MET,\s*(\d+)\s+PARTIAL,\s*(\d+)\s+NOT MET,\s*(\d+)\s+NOT APPLICABLE\*\*"
 )
@@ -64,15 +83,7 @@ TEST_PASS_PATTERNS = (
 )
 
 
-def _find_repo_root() -> Path:
-    """Resolve the repo root. Same layout-detection as the other policy scripts."""
-    script_dir = Path(__file__).resolve().parent
-    if script_dir.name == "policy" and script_dir.parent.name == "scripts":
-        return script_dir.parents[1]
-    return script_dir.parent
-
-
-REPO_ROOT = _find_repo_root()
+REPO_ROOT = find_repo_root(__file__)
 RUN_DIR_BASE = REPO_ROOT / ".agent-runs"
 
 
@@ -361,14 +372,128 @@ def _extract_int(text: str, key: str) -> int | None:
     return int(m.group(1))
 
 
-def _write_decision(run_dir: Path, conditions: list[ConditionResult]) -> None:
+# ---------------------------------------------------------------------------
+# Directive-contract integration (v2.0)
+#
+# When `.agent-runs/<run-id>/directive.yaml` exists and is bound, auto-promote
+# also re-verifies that manifest.yaml and scope-lock.yaml still match the
+# directive's preapproved content (downstream defense-in-depth — the binding
+# can't be the only proof of conformance), then evaluates every directive
+# `acceptance.manager` assertion on top of the six base conditions.
+#
+# Two module-level callable helpers are exposed so directives can reference
+# them by public name: `no_unresolved_open_caveats` and
+# `verifier_covers_manifest_expected_outputs`. The directive YAML names them
+# verbatim under `acceptance.manager[].name`.
+# ---------------------------------------------------------------------------
+
+
+def no_unresolved_open_caveats(ctx, args):
+    checked: list[str] = []
+    for path in ctx.run_dir.glob("*.md"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        match = re.search(r"^##\s+Open Caveats / Release Risks\s*$", text, re.MULTILINE)
+        if not match:
+            continue
+        checked.append(path.name)
+        section = text[match.end() :]
+        next_heading = re.search(r"^##\s+", section, re.MULTILINE)
+        body = section[: next_heading.start()] if next_heading else section
+        unresolved = [
+            line.strip()
+            for line in body.splitlines()
+            if line.strip().startswith("-") and "INTENTIONAL DEFERRAL:" not in line
+        ]
+        if unresolved:
+            return False, f"{path.name} has unresolved caveat(s): {'; '.join(unresolved)}"
+    return True, "no unresolved Open Caveats / Release Risks bullets" + (f" in {', '.join(checked)}" if checked else "")
+
+
+def verifier_covers_manifest_expected_outputs(ctx, args):
+    import yaml
+
+    manifest = yaml.safe_load((ctx.run_dir / "manifest.yaml").read_text(encoding="utf-8")) or {}
+    root = manifest.get("pipeline_run") if isinstance(manifest.get("pipeline_run"), dict) else manifest
+    outputs = root.get("expected_outputs") or []
+    report = (ctx.run_dir / "verifier-report.md").read_text(encoding="utf-8", errors="replace").lower()
+    missing = [str(item) for item in outputs if str(item).lower() not in report]
+    if missing:
+        return False, "verifier-report.md does not cite expected output(s): " + ", ".join(missing)
+    return True, f"verifier-report.md cites {len(outputs)} manifest expected output(s)"
+
+
+def _check_directive_manager(run_id: str, run_dir: Path) -> list[ConditionResult]:
+    try:
+        ctx = load_directive(REPO_ROOT, run_id)
+        if ctx is None:
+            return []
+        ensure_hash_integrity(ctx)
+        conformance_results: list[ConditionResult] = []
+        for name, artifact, key in (
+            ("directive-manifest-conformance", "manifest.yaml", "manifest"),
+            ("directive-scope-lock-conformance", "scope-lock.yaml", "scope_lock"),
+        ):
+            matched, diff = compare_preapproved(ctx, artifact, key)
+            if not matched:
+                conformance_results.append(
+                    ConditionResult(
+                        name,
+                        False,
+                        f"{artifact} diverges from directive {ctx.current_hash}: {diff.strip()}",
+                    )
+                )
+        if conformance_results:
+            return conformance_results
+        acceptance = ctx.directive.get("acceptance") or {}
+        assertions = acceptance.get("manager") or []
+        if not isinstance(assertions, list):
+            raise DirectiveError("directive acceptance.manager must be a list")
+        artifact_texts = {
+            path.name: path.read_text(encoding="utf-8", errors="replace")
+            for path in run_dir.glob("*")
+            if path.is_file()
+        }
+        results = evaluate_assertions(
+            ctx=ctx,
+            assertions=assertions,
+            artifact_texts=artifact_texts,
+            callable_namespace=__name__,
+        )
+        return [
+            ConditionResult(
+                f"directive-manager:{result.id}",
+                result.passed,
+                f"directive {ctx.current_hash} ({ctx.author}, {ctx.authority}): {result.evidence}",
+            )
+            for result in results
+        ]
+    except DirectiveError as exc:
+        return [ConditionResult("directive-manager:integrity", False, str(exc))]
+
+
+def _directive_summary(run_id: str) -> str:
+    try:
+        ctx = load_directive(REPO_ROOT, run_id)
+        if ctx is None:
+            return "No directive contract was present for this run."
+        return f"Directive hash `{ctx.current_hash}`; author `{ctx.author}`; authority `{ctx.authority}`."
+    except DirectiveError as exc:
+        return f"Directive contract unavailable for citation: {exc}"
+
+
+def _write_decision(run_id: str, run_dir: Path, conditions: list[ConditionResult]) -> None:
     """Write the preset manager-decision.md that the runner uses to short-circuit."""
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [
         "**Decision: PROMOTE**",
         "",
-        "_Generated by `scripts/auto_promote.py` — all six v0.5 auto-promote conditions satisfied. "
+        "_Generated by `scripts/auto_promote.py` — all auto-promote conditions satisfied "
+        "(six base + N directive). "
         f"Timestamp: {timestamp}._",
+        "",
+        "## Directive contract",
+        "",
+        _directive_summary(run_id),
         "",
         "## Citation",
         "",
@@ -428,7 +553,7 @@ def _write_report(run_dir: Path, conditions: list[ConditionResult]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", action="version", version="agent-pipeline-claude 1.3.1")
+    parser.add_argument("--version", action="version", version="agent-pipeline-claude 2.0.0")
     parser.add_argument(
         "--run",
         required=True,
@@ -449,6 +574,7 @@ def main() -> int:
         _check_judge(run_dir),
         _check_tests(run_dir),
     ]
+    conditions.extend(_check_directive_manager(args.run, run_dir))
 
     all_passed = all(c.passed for c in conditions)
 
@@ -459,7 +585,7 @@ def main() -> int:
         print(f"  [{marker}] {c.name} — {c.evidence}")
 
     if all_passed:
-        _write_decision(run_dir, conditions)
+        _write_decision(args.run, run_dir, conditions)
         print("auto_promote: ELIGIBLE — manager-decision.md written with PROMOTE.")
         return 0
 

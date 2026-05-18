@@ -1,13 +1,95 @@
 # agent-pipeline-claude — User Manual
 
-Ship multi-step Claude Code work that doesn't drift. The plugin reads your project's spec, drafts a per-run scope contract, and asks you to APPROVE in chat. Then it runs research → plan → execute → verify → critique end-to-end with three human gates, an opt-in real-time judge, and machine-checkable auto-promote.
+Ship multi-step Claude Code work that doesn't drift. The plugin reads your project's spec, drafts a per-run scope contract, and asks you to APPROVE via a modal gate. Then it runs research → plan → execute → verify → critique end-to-end with three human gates, an opt-in real-time judge, machine-checkable auto-promote, **eleven lifecycle hooks** that enforce the pipeline at runtime, **directive-contract pre-approval** for conformant runs, **persistent file-backed memory** that survives context compaction, and an **MCP Mem0 layer** for cross-session continuity.
 
-**Version:** 1.1.0
+**Version:** 2.0.0
 **License:** Apache 2.0
 
 ---
 
-## What's new in v1.1 (read first if you used v1.0.x)
+## What's new in v2.0 (heavier-hand redesign)
+
+v2.0 closes the failure mode that v1.3.x couldn't fully fix: even with modal gates and evidence-driven auto-promote, the model could drift mid-run, lose state at context compaction, and forget decisions across sessions. v2.0 adds enforcement at every load-bearing point.
+
+### Eleven Cowork lifecycle hooks (`hooks/hooks.json`)
+
+Bundled hooks run on every Cowork session event:
+
+| Event | What it does |
+|---|---|
+| `SessionStart` | Injects active-run context + `handoff_current.md` |
+| `UserPromptSubmit` | Warns on stale bare skill names; blocks bypass attempts |
+| `PreToolUse` | Classifies tool risk; denies destructive / out-of-scope writes |
+| `PermissionRequest` | Auto-denies dangerous; auto-allows when directive-bound |
+| `PostToolUse` | Adds corrective context after failed tools |
+| `PostToolUseFailure` | Records the failure to `open_loops.jsonl` with severity=high |
+| `PreCompact` | Snapshots memory before context compaction |
+| `PostCompact` | Re-injects `handoff_current.md` after compaction |
+| `SubagentStop` | Records subagent completion to memory |
+| `Stop` | Blocks invalid pipeline stops |
+| `SessionEnd` | Final memory flush; Mem0 sync attachment point |
+
+Hooks load automatically when the plugin is installed. No configuration required.
+
+### Persistent file-backed run memory
+
+Hooks write `.agent-runs/<run-id>/memory/`:
+
+- `events.jsonl` — every event (catch-all)
+- `turns.jsonl` — UserPromptSubmit
+- `decisions.jsonl` — PreToolUse + PermissionRequest
+- `open_loops.jsonl` — PostToolUse + PostToolUseFailure + Stop
+- `handoff_current.md` — regenerated on every record; SessionStart and PostCompact inject this as context
+
+Pipeline state is now durable across context compaction. The runtime no longer depends on the model remembering the orchestrator markdown halfway through a long session.
+
+### Directive contracts (`.agent-runs/<run-id>/directive.yaml`)
+
+Operators pre-approve manifest and scope-lock content with a SHA-256-bound hash. Copy `pipelines/directive-template.yaml` to your run dir before starting. Conformant runs auto-approve manifest and plan gates. Bound hash is verified on every consult — tampering surfaces explicitly as `CONTRACT_DIVERGED` (exit 3 from `check_directive_conformance.py`) and stops the orchestrator.
+
+### Intake skill (`/agent-pipeline-claude:intake`)
+
+Soft onboarding for ideas without a manifest. Drafts `intake.md`, `manifest.yaml`, `scope-lock.yaml`, and `intake-questions.md` under `.agent-runs/<run-id>/`. Does not start the pipeline; operator completes TODOs and then runs `/agent-pipeline-claude:run resume <run-id>`.
+
+### Mem0 cross-session memory (`/agent-pipeline-claude:mem0`)
+
+Two-layer architecture:
+
+- **Layer A** (file-backed): unconditional, no network. Hooks already write this.
+- **Layer B** (Mem0): cross-session, semantically retrievable. Best-effort behind a circuit breaker.
+
+Subcommands: `init` (write `.mem0/config.json` + consent stub), `up` / `down` (OSS docker stack), `whoami` (derived identity), `test` (smoke check), `sync` (flush Layer A → Layer B), `prune` (FR-12 hygiene with interactive confirm).
+
+OSS-default per PRD FR-1. Platform mode requires explicit `consent.json` grant (FR-14). Layer A still works without Mem0 enabled.
+
+#### OSS stack ports
+
+The vendor `mem0ai/mem0` docker compose exposes the following ports on the host. The plugin's default `oss.base_url` points at the **API** port — the SDK must NOT be pointed at the dashboard:
+
+| Service | Host port | Inside container | Used by |
+|---|---|---|---|
+| `mem0` (FastAPI server) | **8888** | 8000 | `oss.base_url` — what the `mem0ai` Python SDK calls |
+| `mem0-dashboard` (Next.js UI) | **3000** | 3000 | Browser UI only; NOT a programmatic endpoint |
+| `postgres` | 8432 | 5432 | Internal compose-network only |
+| `qdrant` | (none exposed by default) | 6333 | Internal compose-network only |
+
+If you upgraded from a `.mem0/config.json` that was scaffolded before 2026-05-18, your `oss.base_url` may still be `http://localhost:3000` (the dashboard). Run `python scripts/mem0_bootstrap.py init --mode oss --force` to re-scaffold, or hand-edit to `http://localhost:8888`.
+
+### Scope-lock authority
+
+`scripts/check_scope_lock.py` + `check_rung_file_ownership.py` + `check_release_docs_consistency.py` block work that drifts off the canonical release-plan rung. Required runs check edited paths, commit messages, and doc claims for forbidden future-rung terms.
+
+### DoD readiness gate
+
+`scripts/check_execute_readiness.py` blocks policy/verify until `implementation-report.md` declares `**DoD readiness: READY**` with a parseable `**DoD checklist: T total, R ready, B blocked, D deferred**` line where blocked=0.
+
+### Show-run-status skill (`/agent-pipeline-claude:show-run-status`)
+
+Read-only summary of a run's `.agent-runs/<run-id>/` state. Use when you need to know what's happening in a run without resuming it.
+
+---
+
+## v1.x history — read if you used v1.0.x or earlier
 
 v1.1 fixes the install/runtime adapter that v1.0.0–v1.0.2 got wrong. Plugin behavior, manifest schema, role files, and policy scripts are unchanged.
 
@@ -201,11 +283,11 @@ That's the whole command. The skill:
 
 ## The three human gates
 
-Each is a chat-message decision moment. Three universal verbs: `APPROVE` to accept, `REPLAN <description>` (or `<description>`) to revise, or — at the manager gate — `BLOCK` to halt.
+Each fires as a one-click `AskUserQuestion` modal. Three universal verbs as modal options: `APPROVE` to accept, `REPLAN` (with optional free-form description in the modal's text field) to revise, or — at the manager gate — `BLOCK` to halt. The v0.5.x chat-text gate was retired in v1.3.0.
 
-1. **Manifest gate** (after the drafter). You review YAML in chat and APPROVE or describe changes. The drafter loops on revision (max 5 cycles before falling back to a hand-edit prompt).
-2. **Plan gate** (after research → plan). You see the planner's plan summary inline + a count of files in the blast radius + a list of open questions. APPROVE or REPLAN.
-3. **Manager gate** (after auto-promote, only when auto-promote did NOT fire). The manager produces a PROMOTE / BLOCK / REPLAN recommendation citing the verifier, drift-detector, and critic findings verbatim. APPROVE / BLOCK / REPLAN.
+1. **Manifest gate** (after the drafter). You review YAML in chat, then click APPROVE in the modal that fires immediately after. Describe changes via REPLAN to loop on revision (max 5 cycles before falling back to a hand-edit prompt).
+2. **Plan gate** (after research → plan). You see the planner's plan summary inline + a count of files in the blast radius + a list of open questions. Click APPROVE or REPLAN in the modal.
+3. **Manager gate** (after auto-promote, only when auto-promote did NOT fire). The manager produces a PROMOTE / BLOCK / REPLAN recommendation citing the verifier, drift-detector, and critic findings verbatim. Click APPROVE / BLOCK / REPLAN in the modal.
 
 When the auto-promote stage's six conditions all pass, the manager gate auto-fires (PROMOTE) and no human prompt appears. The run reports DONE-PROMOTED in its final summary.
 
@@ -284,13 +366,27 @@ Read the artifact named in the log line. Most failures cite the policy check tha
 
 Read `auto-promote-report.md`. It cites the failing condition(s). Common: critic findings > 0, verifier open items > 0, tests didn't run, judge log shows blocked actions. Address the cited condition(s) and re-run.
 
+### Hooks silently fail on macOS or Linux (no Python launcher)
+
+`hooks/hooks.json` invokes `python ...` (the Windows-default binary name). On macOS and many Linux distributions the binary is `python3` and `python` is unset. Symptoms: SessionStart loads no run context, scope guards never fire, memory writes don't happen, and Cowork doesn't surface hook errors aggressively.
+
+Workaround: create a `python` shim on PATH pointing at your `python3` binary. On macOS:
+
+```bash
+mkdir -p ~/.local/bin
+ln -s "$(which python3)" ~/.local/bin/python
+# add ~/.local/bin to PATH in your shell rc
+```
+
+On Linux distributions where `python` isn't installed by the distro python package, `apt install python-is-python3` (Debian/Ubuntu) accomplishes the same thing. A future plugin release may auto-detect or split hooks.json per platform; for now the launcher convention is the operator's responsibility.
+
 ## Glossary
 
-- **Manifest** — the per-run scope contract. YAML at `.agent-runs/<run-id>/manifest.yaml`. Drafted from your project's spec, gated on chat APPROVE.
+- **Manifest** — the per-run scope contract. YAML at `.agent-runs/<run-id>/manifest.yaml`. Drafted from your project's spec, gated on a one-click modal APPROVE (`AskUserQuestion`) since v1.3.0.
 - **Pipeline** — the ordered list of stages for a run type, defined in `.pipelines/<type>.yaml`. Default types: `feature`, `bugfix`, `module-release`.
 - **Stage** — one step in a pipeline. Each writes a named artifact to `.agent-runs/<run-id>/`.
 - **Role** — the markdown file at `.pipelines/roles/<role>.md` that tells a subagent how to perform one stage. Self-contained — a fresh Claude session can execute the stage from the role file alone.
-- **Gate** — a halt-and-prompt point. Three universal verbs: APPROVE, REPLAN, BLOCK.
+- **Gate** — a halt-and-prompt point. Three universal verbs: APPROVE, REPLAN, BLOCK. Surfaced as modal options via `AskUserQuestion`; the v0.5.x free-form "type APPROVE in chat" ceremony was retired in v1.3.0.
 - **Auto-promote** — the six-condition machine check that bypasses the manager gate when all conditions pass. Conditions: verifier-clean, critic-clean, drift-clean, policy-passed, judge-clean, tests-passed.
 - **Judge layer** — opt-in real-time action supervision. Activated by the presence of `.pipelines/action-classification.yaml`.
 - **Drift-detector** — adversarial stage that compares manifest contract against the assembled final state. Catches doc drift, status-word abuse, cross-file inconsistency.
@@ -303,17 +399,17 @@ If you're upgrading directly from v0.5.x and skipped v1.0:
 
 - The two-step `/new-run` + `/run-pipeline` is gone. Use `/agent-pipeline-claude:run "<description>"`.
 - The manifest is drafted from your project's spec; you no longer hand-author 11 fields from blank.
-- All three human gates are chat messages (APPROVE / REPLAN / BLOCK), not modal popups.
+- All three human gates fire as one-click `AskUserQuestion` modal prompts (APPROVE / REPLAN / BLOCK as labels). The v0.5.x free-form chat-APPROVE ceremony was retired in v1.3.0.
 - All slash invocations are namespaced: `/agent-pipeline-claude:<skill>` instead of `/<skill>`.
 
-The manifest schema, role files, policy scripts, and pipeline definitions are unchanged. Existing `.agent-runs/<run-id>/` directories from v0.5.x runs work as resumable runs in v1.1.
+The manifest schema, role files, policy scripts, and pipeline definitions are unchanged across the line. Existing `.agent-runs/<run-id>/` directories from v0.5.x runs work as resumable runs in v2.0.
 
 To upgrade:
 
 ```
 cd ~/.claude/plugins/marketplaces/agent-pipeline-claude
 git pull
-git checkout v1.1.0
+git checkout v2.0.0
 ```
 
 Then fully quit and reopen Cowork.

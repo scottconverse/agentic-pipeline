@@ -22,38 +22,13 @@ import re
 import sys
 from pathlib import Path
 
-def _find_repo_root() -> Path:
-    """Resolve the repo root regardless of which supported layout the
-    script is running from.
-
-    Two supported layouts:
-
-      * **Plugin source** — ``<repo>/scripts/check_no_todos.py``.
-        The repo root is the immediate parent of the ``scripts/`` dir.
-
-      * **Installed project** — ``<repo>/scripts/policy/check_no_todos.py``.
-        After ``/pipeline-init`` copies the script under
-        ``scripts/policy/``, the repo root is two directories up.
-
-    Detection is by the script's parent directory name. If the parent
-    is ``policy`` and the grandparent is ``scripts``, we're in the
-    installed layout; otherwise we're in the plugin source layout (or
-    a non-standard placement, in which case the immediate parent of
-    ``scripts/`` is the best available guess).
-
-    The original implementation hard-coded ``parents[2]`` for the
-    installed layout, which caused the plugin source layout to scan
-    the plugin's *parent* directory (e.g. ``Desktop/Claude/`` when
-    cloned into ``Desktop/Claude/agent-pipeline-claude``), pulling sibling
-    projects into the scan and emitting spurious failures.
-    """
-    script_dir = Path(__file__).resolve().parent
-    if script_dir.name == "policy" and script_dir.parent.name == "scripts":
-        return script_dir.parents[1]
-    return script_dir.parent
+try:
+    from policy_utils import find_repo_root
+except ModuleNotFoundError:  # pragma: no cover - installed layout
+    from scripts.policy_utils import find_repo_root
 
 
-REPO_ROOT = _find_repo_root()
+REPO_ROOT = find_repo_root(__file__)
 
 # Directories that ARE scanned. If your project's source isn't auto-detected,
 # edit this list explicitly (e.g. SCAN_ROOTS = [REPO_ROOT / "src" / "myproject"]).
