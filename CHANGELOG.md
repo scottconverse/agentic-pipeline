@@ -7,6 +7,15 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — audit Pass 8a (Pass 2 mirror drift) — pipeline-payload scripts pick up centralized `find_repo_root`
+
+Mid-sprint audit-lite caught a same-class regression: Pass 2 centralized `find_repo_root` in 11 top-level scripts but the pipeline-payload mirror still shipped 10 local `_find_repo_root` helpers that ignored `CLAUDE_PROJECT_DIR`. Since pipeline-init copies the mirror into operator projects as `scripts/policy/`, operators who scaffold a project today would inherit the *pre-Pass-2* bug — the exact "incomplete same-class fix" failure mode the audit had warned about.
+
+- Replaced the local `_find_repo_root` in 10 pipeline-payload scripts with `from policy_utils import find_repo_root` + `find_repo_root(__file__)`: `auto_promote.py`, `check_adr_gate.py`, `check_allowed_paths.py`, `check_critic_evidence.py`, `check_manager_evidence.py`, `check_manifest_immutable.py`, `check_manifest_paths.py`, `check_manifest_schema.py`, `check_no_todos.py`, `check_stage_done.py`. `run_all.py` was already done in Pass 3. `check_active_target.py` keeps its cwd-based helper (intentional — it's about the user's active target, not the project root).
+- New parametrized test `test_pipeline_payload_scripts_use_central_find_repo_root` covers all 11 mirror scripts. New `test_check_active_target_intentionally_keeps_local_helper` pins the one exception. Drift in either direction now fails CI.
+
+**Operator impact:** projects scaffolded after this commit get the `CLAUDE_PROJECT_DIR`-honoring resolution in every policy script. Previously-scaffolded projects can refresh via `/pipeline-init` → "Refresh policy scripts only" modal option.
+
 ### Fixed — audit Pass 7 (Cluster G) — MCP local-write tool allowlist
 
 Phase 6.c added `_extract_write_paths()` to make the scope guard pick up `tool_input.file_path` / `edits[].file_path` / `notebook_path` for the core Claude tools (Write, Edit, MultiEdit, NotebookEdit). MCP write tools — `mcp__*__create_file`, `mcp__*__copy_file`, etc. — were not covered. A subprocess that invoked an MCP file-creation tool could write outside `manifest.allowed_paths` without tripping the scope-lock guard.

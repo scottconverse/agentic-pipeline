@@ -110,3 +110,67 @@ def test_pipeline_payload_mirror_matches_top_level() -> None:
     ).read_text(encoding="utf-8")
     assert "CLAUDE_PROJECT_DIR" in top_level, "top-level missing CLAUDE_PROJECT_DIR handling"
     assert "CLAUDE_PROJECT_DIR" in mirror, "pipeline-payload mirror missing CLAUDE_PROJECT_DIR handling"
+
+
+# Pass 8a (audit-lite finding): Pass 2 fixed top-level scripts but left
+# the pipeline-payload mirror with 10 local `_find_repo_root` helpers
+# that still ignored CLAUDE_PROJECT_DIR. This is the "incomplete same-
+# class fix" failure mode the operator explicitly called out. The tests
+# below pin the mirror scripts to the centralized helper so any
+# regression at the payload layer fails CI loudly.
+_PAYLOAD_SCRIPTS_DIR = (
+    REPO_ROOT
+    / "skills" / "pipeline-init" / "references" / "pipeline-payload" / "scripts"
+)
+
+# Scripts that MUST use `from policy_utils import find_repo_root` —
+# i.e., all policy scripts in the mirror EXCEPT `check_active_target.py`
+# (intentionally cwd-based per Pass 2 design note).
+_MIRROR_SCRIPTS_USING_CENTRAL = (
+    "auto_promote.py",
+    "check_adr_gate.py",
+    "check_allowed_paths.py",
+    "check_critic_evidence.py",
+    "check_manager_evidence.py",
+    "check_manifest_immutable.py",
+    "check_manifest_paths.py",
+    "check_manifest_schema.py",
+    "check_no_todos.py",
+    "check_stage_done.py",
+    "run_all.py",
+)
+
+
+@pytest.mark.parametrize("script_name", _MIRROR_SCRIPTS_USING_CENTRAL)
+def test_pipeline_payload_scripts_use_central_find_repo_root(script_name: str) -> None:
+    """Each pipeline-payload script (that scaffolds into operator projects)
+    must import find_repo_root from policy_utils — not define its own
+    local helper. Pre-Pass-8a the mirror still had 10 local definitions
+    even though the top-level had been centralized; pipeline-init then
+    copied the broken versions into operator projects."""
+    text = (_PAYLOAD_SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
+    # Centralized import must be present (try/except dual form is fine).
+    assert "from policy_utils import find_repo_root" in text or \
+        "from scripts.policy_utils import find_repo_root" in text, (
+            f"{script_name}: missing centralized find_repo_root import"
+        )
+    # Local helper must be absent — checks for the definition line, not
+    # the call site (which moves to find_repo_root(__file__)).
+    assert "def _find_repo_root(" not in text, (
+        f"{script_name}: still defines local _find_repo_root — Pass 8a "
+        f"required removing it in favor of the centralized helper."
+    )
+
+
+def test_check_active_target_intentionally_keeps_local_helper() -> None:
+    """check_active_target.py is the only mirror script that intentionally
+    keeps a cwd-based local _find_repo_root (it's about the user's active
+    target, not the project root). This test pins that exception so a
+    future refactor can't quietly fold it into the centralized helper
+    and break the intent."""
+    text = (_PAYLOAD_SCRIPTS_DIR / "check_active_target.py").read_text(encoding="utf-8")
+    assert "def _find_repo_root(" in text, (
+        "check_active_target.py must keep its cwd-based local helper. "
+        "If you intend to fold it into policy_utils.find_repo_root, also "
+        "update Pass 8a's design note in scripts/policy_utils.py."
+    )
