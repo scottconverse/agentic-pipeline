@@ -158,6 +158,59 @@ def test_run_skill_does_not_require_grant():
 
 
 # ---------------------------------------------------------------------------
+# Pipeline-init skill: also uses AskUserQuestion (audit Pass 5 / Cluster E)
+# ---------------------------------------------------------------------------
+#
+# v1.3.0 retired the chat-`APPROVE` ceremony for the three run-time gates
+# (manifest, plan, manager). The pipeline-init skill missed that
+# bandwagon — it kept telling Claude to "Render the orientation summary
+# as a plain chat message — do not use AskUserQuestion for the APPROVE
+# gate." Pass 5 aligns pipeline-init with the v1.3.0 design: the chat
+# message stays (it's informational), but the decision goes through a
+# modal prompt.
+
+
+def test_pipeline_init_skill_references_askuserquestion():
+    """SKILL.md of /pipeline-init must reference AskUserQuestion for the
+    gate flow (Pass 5 / Cluster E)."""
+    text = _read(REPO_ROOT / "skills" / "pipeline-init" / "SKILL.md")
+    assert "AskUserQuestion" in text, (
+        "Pass 5 pipeline-init skill must use AskUserQuestion for the "
+        "approve / wait / cancel decision."
+    )
+
+
+def test_pipeline_init_skill_does_not_ban_askuserquestion():
+    """The pre-Pass-5 SKILL.md had the explicit line `do not use
+    AskUserQuestion for the APPROVE gate`. That instruction is gone."""
+    text = _read(REPO_ROOT / "skills" / "pipeline-init" / "SKILL.md")
+    forbidden = (
+        "do not use `AskUserQuestion` for the APPROVE gate",
+        "do not use AskUserQuestion for the APPROVE gate",
+    )
+    for needle in forbidden:
+        assert needle not in text, (
+            f"pipeline-init SKILL.md still contains the pre-Pass-5 ban "
+            f"on AskUserQuestion ({needle!r}). v1.3.0 retired chat-APPROVE."
+        )
+
+
+def test_pipeline_init_procedure_uses_modal_gates():
+    """references/pipeline-init.md must instruct Claude to invoke
+    AskUserQuestion for the scaffold / re-init / greenfield gates."""
+    text = _read(REPO_ROOT / "skills" / "pipeline-init" / "references" / "pipeline-init.md")
+    assert text.count("AskUserQuestion") >= 3, (
+        "pipeline-init.md should reference AskUserQuestion at least at "
+        "the scaffold gate, the greenfield SPEC.md gate, and the "
+        "re-init refresh gate."
+    )
+    # The pre-Pass-5 free-text gate instructions must be gone (no
+    # `Reply with a, b, c, or d` or `Reply APPROVE` in chat).
+    assert "Reply with a, b, c, or d" not in text
+    assert "Reply `APPROVE` to scaffold" not in text
+
+
+# ---------------------------------------------------------------------------
 # Version pin
 # ---------------------------------------------------------------------------
 

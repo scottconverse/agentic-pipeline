@@ -7,6 +7,16 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — audit Pass 5 (Cluster E) — pipeline-init uses AskUserQuestion modal
+
+v1.3.0 retired the chat-`APPROVE` ceremony for the three run-time gates (manifest, plan, manager) because the LLM kept halting on the interpretive surface area of free-form gate text. The pipeline-init skill missed that bandwagon — `skills/pipeline-init/SKILL.md` explicitly instructed Claude to "Render the orientation summary as a plain chat message — do not use `AskUserQuestion` for the APPROVE gate." Operators saw modal gates inside `/run` but free-text gates inside `/pipeline-init`. v2.0's "heavier hand" pitch couldn't credibly claim modal-everywhere when the front door still asked operators to type APPROVE.
+
+- `skills/pipeline-init/SKILL.md`: reversed the explicit ban on AskUserQuestion. The orientation summary stays in chat (informational); the approve / wait / adjust decision goes through a modal.
+- `skills/pipeline-init/references/pipeline-init.md`: updated three gates to use `AskUserQuestion` blocks with concrete option labels — the scaffold gate (Step 2/3), the greenfield SPEC.md gate, and the re-init refresh-subset gate. Removed all "Reply `APPROVE`" / "Reply with a, b, c, or d" instructions.
+- 3 new regression tests in `tests/test_v130_redesign.py`: `test_pipeline_init_skill_references_askuserquestion`, `test_pipeline_init_skill_does_not_ban_askuserquestion`, `test_pipeline_init_procedure_uses_modal_gates`.
+
+**Operator impact:** `/pipeline-init` now feels the same as `/run` — every decision point is a one-click modal. No more "type APPROVE then hit enter, hope you typed it right."
+
 ### Fixed — audit Pass 4 (Cluster D) — directive ↔ scope-lock field vocabulary
 
 `pipelines/directive-template.yaml`'s `preapproved.scope_lock` block used three field names that don't match `scripts/check_scope_lock.py`'s vocabulary — `current_rung_title` instead of `rung_title`, `proof_statement` instead of `proves`, `forbidden_future_rung_terms` instead of `forbidden_feature_terms_without_replan`. Because `directive_utils.compare_preapproved` uses exact dict-equality, a directive authored from this template against a scope-lock.yaml authored from `scope-lock-template.yaml` was structurally impossible to satisfy: `actual == expected` always returned False.

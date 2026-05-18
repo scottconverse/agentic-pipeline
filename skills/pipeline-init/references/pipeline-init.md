@@ -45,17 +45,27 @@ Project orientation:
   Missing: <gaps, e.g. "no docs/adr/ — the ADR policy gate will be disabled until you add one">
   Test framework: <pytest | jest | unknown>
   CI: <detected workflow files or "none">
-
-Reply `APPROVE` to scaffold .pipelines/ + scripts/policy/ + (if missing) CLAUDE.md.
-Reply `WAIT` to fix anything in the summary first.
-Reply with corrections in plain English and I'll re-summarize.
 ```
 
-Do NOT scaffold without an explicit `APPROVE`.
+The summary is informational. **Then invoke `AskUserQuestion`** (one modal, three options) — do NOT ask the user to reply with `APPROVE` in chat. v1.3.0 retired the chat-text gate across the plugin because the LLM kept halting on the interpretive surface area; pipeline-init aligns with that for v2.0 (audit Cluster E).
+
+```text
+question: "Scaffold .pipelines/, scripts/policy/, and (if missing) a starter CLAUDE.md?"
+header:   "Scaffold"
+options:
+  - label: "APPROVE"
+    description: "Create .pipelines/, scripts/policy/, .gitignore entry, and starter CLAUDE.md if missing."
+  - label: "WAIT"
+    description: "Pause so you can fix something in the orientation summary first."
+  - label: "Adjust"
+    description: "Pass corrections in plain English to update the summary, then re-prompt."
+```
+
+Do NOT scaffold without an explicit APPROVE selection from the modal.
 
 ### Step 3 — scaffold on APPROVE
 
-When the user replies `APPROVE`:
+When the operator selects APPROVE in the modal:
 
 **Source of truth for the scaffolded files:** the bundled payload at
 `references/pipeline-payload/` inside this skill (resolved relative to the
@@ -129,43 +139,61 @@ What the command DOES need to flag, at end of Step 3: if the user then runs `/ru
 
 ## Hard rules
 
-- Never overwrite an existing `CLAUDE.md`. If it exists, ask whether to APPEND a `## Pipeline drafter notes` section (the part the drafter needs) or skip.
-- Never overwrite an existing `.pipelines/` directory. If it exists, treat as re-init: ask whether to refresh the role files (and which) or skip.
+- Never overwrite an existing `CLAUDE.md`. If it exists, render an informational chat message naming the file's contents, then gate the decision through `AskUserQuestion` with options "APPEND pipeline drafter notes" / "SKIP" — do not ask the operator to reply `APPROVE` in chat.
+- Never overwrite an existing `.pipelines/` directory. If it exists, treat as re-init: render the summary in chat and gate the subset-to-refresh question through `AskUserQuestion` (see "Re-init handling" below).
 - Never copy any file outside the project root the user is in.
 - Never read or modify the plugin's own marketplace dir under `~/.claude/plugins/marketplaces/`.
-- Always produce an orientation summary BEFORE scaffolding. Show your reading; let the user correct it.
+- Always produce an orientation summary BEFORE the modal gate fires. Show your reading in chat; gate the decision in the modal.
 
 ## Greenfield handling
 
-If `$ARGUMENTS` is a description paragraph (no spec file exists, no repo to read), synthesize a minimal spec inline:
+If `$ARGUMENTS` is a description paragraph (no spec file exists, no repo to read), synthesize a minimal spec inline and render it in chat:
 
 ```
 You gave me a description but no existing spec. Synthesizing a minimal
-spec now — review and reply APPROVE to write it to SPEC.md, or `WAIT`
-if you'd rather edit it inline first.
+spec now — review the draft below and use the modal to choose how to
+proceed.
 
-```
 [synthesized minimal spec: 1-2 paragraphs of purpose, target audience,
 core capabilities, tech-stack inferences, license]
 ```
+
+Then invoke `AskUserQuestion`:
+
+```text
+question: "Write the synthesized SPEC.md to disk?"
+header:   "Write SPEC"
+options:
+  - label: "APPROVE"
+    description: "Save the draft above as SPEC.md at the project root."
+  - label: "WAIT"
+    description: "Don't write yet — let me edit the draft inline first."
 ```
 
 Once approved, write `SPEC.md` at project root and continue to Step 2 with `SPEC.md` as the read source.
 
 ## Re-init handling
 
-If `.pipelines/` already exists, the project was initialized before. Send:
+If `.pipelines/` already exists, the project was initialized before. Render the situation in chat:
 
 ```
 Project is already initialized (.pipelines/ exists with <N> files).
-
-Want to:
-  (a) Refresh role files from the current plugin version (useful after upgrading the plugin).
-  (b) Refresh policy scripts only.
-  (c) Refresh everything (role files + policy scripts + manifest template).
-  (d) Cancel — leave the existing setup as-is.
-
-Reply with a, b, c, or d.
 ```
 
-Apply the selected option; do NOT touch the user's `.agent-runs/`, manifests, or CLAUDE.md without explicit consent.
+Then invoke `AskUserQuestion` for the refresh subset:
+
+```text
+question: "Refresh what? (.pipelines/ already exists)"
+header:   "Re-init"
+options:
+  - label: "Role files"
+    description: "Refresh role files from the current plugin version. Useful after upgrading the plugin."
+  - label: "Policy scripts"
+    description: "Refresh scripts/policy/ only."
+  - label: "Everything"
+    description: "Refresh role files + policy scripts + manifest template."
+  - label: "Cancel"
+    description: "Leave the existing setup as-is."
+```
+
+Apply the selected option; do NOT touch the user's `.agent-runs/`, manifests, or CLAUDE.md without explicit consent (a separate modal if needed).
