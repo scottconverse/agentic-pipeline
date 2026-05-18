@@ -6,7 +6,25 @@ The plugin reads your project's spec, drafts a per-run scope contract from it, a
 
 One namespaced skill. No YAML for you to hand-author.
 
-**Current release: v1.3.1** · **In development: v2.0.0 (heavier-hand: hooks + Mem0 + directive contracts)** · [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
+**Current release: v2.0.0** — heavier-hand redesign with hooks-based enforcement, directive contracts, intake skill, persistent file-backed run memory, and an MCP Mem0 layer for cross-session continuity. [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
+
+## What's new in v2.0.0
+
+v2.0 takes the opposite direction from PR #22 (closed): instead of collapsing gates and removing enforcement, it **adds enforcement everywhere**:
+
+- **Eleven Cowork lifecycle hooks** observe every load-bearing event (SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, SubagentStop, Stop, SessionEnd). They block destructive commands, deny out-of-scope writes during active runs, warn on release operations, and refuse invalid pipeline stops.
+- **Persistent file-backed run memory** under `.agent-runs/<run-id>/memory/`. Hooks write to it on every event. The `handoff_current.md` is re-injected as context on SessionStart and PostCompact — pipeline state is durable across context compaction.
+- **Directive contracts** (`.agent-runs/<run-id>/directive.yaml`) let operators pre-approve manifest and scope-lock content with a SHA-256-bound hash. Conformant runs auto-approve the manifest and plan gates; tampering surfaces explicitly.
+- **Intake skill** (`/agent-pipeline-claude:intake`) drafts starter artifacts from plain English without touching the pipeline. Soft onboarding for ideas that don't yet have a manifest.
+- **Mem0 MCP layer** for cross-session continuity. Two-layer architecture — Layer A (file-backed) is unconditional; Layer B (Mem0) is best-effort behind a circuit breaker. OSS-default, Platform behind explicit consent grant. Sessions in week 2 can recall decisions from week 1.
+- **Scope-lock authority** (`scripts/check_scope_lock.py`, `check_rung_file_ownership.py`, `check_release_docs_consistency.py`) blocks work that drifts off the canonical release-plan rung.
+- **DoD readiness gate** (`scripts/check_execute_readiness.py`) blocks policy/verify until the executor declares full Definition-of-Done readiness with a parseable zero-blocker checklist.
+
+Codex stays lighter; claude takes the heavier hand because Claude historically loses focus mid-run and the runtime needs to catch it.
+
+---
+
+
 
 ---
 

@@ -1,13 +1,82 @@
 # agent-pipeline-claude — User Manual
 
-Ship multi-step Claude Code work that doesn't drift. The plugin reads your project's spec, drafts a per-run scope contract, and asks you to APPROVE in chat. Then it runs research → plan → execute → verify → critique end-to-end with three human gates, an opt-in real-time judge, and machine-checkable auto-promote.
+Ship multi-step Claude Code work that doesn't drift. The plugin reads your project's spec, drafts a per-run scope contract, and asks you to APPROVE via a modal gate. Then it runs research → plan → execute → verify → critique end-to-end with three human gates, an opt-in real-time judge, machine-checkable auto-promote, **eleven lifecycle hooks** that enforce the pipeline at runtime, **directive-contract pre-approval** for conformant runs, **persistent file-backed memory** that survives context compaction, and an **MCP Mem0 layer** for cross-session continuity.
 
-**Version:** 1.1.0
+**Version:** 2.0.0
 **License:** Apache 2.0
 
 ---
 
-## What's new in v1.1 (read first if you used v1.0.x)
+## What's new in v2.0 (heavier-hand redesign)
+
+v2.0 closes the failure mode that v1.3.x couldn't fully fix: even with modal gates and evidence-driven auto-promote, the model could drift mid-run, lose state at context compaction, and forget decisions across sessions. v2.0 adds enforcement at every load-bearing point.
+
+### Eleven Cowork lifecycle hooks (`hooks/hooks.json`)
+
+Bundled hooks run on every Cowork session event:
+
+| Event | What it does |
+|---|---|
+| `SessionStart` | Injects active-run context + `handoff_current.md` |
+| `UserPromptSubmit` | Warns on stale bare skill names; blocks bypass attempts |
+| `PreToolUse` | Classifies tool risk; denies destructive / out-of-scope writes |
+| `PermissionRequest` | Auto-denies dangerous; auto-allows when directive-bound |
+| `PostToolUse` | Adds corrective context after failed tools |
+| `PostToolUseFailure` | Records the failure to `open_loops.jsonl` with severity=high |
+| `PreCompact` | Snapshots memory before context compaction |
+| `PostCompact` | Re-injects `handoff_current.md` after compaction |
+| `SubagentStop` | Records subagent completion to memory |
+| `Stop` | Blocks invalid pipeline stops |
+| `SessionEnd` | Final memory flush; Mem0 sync attachment point |
+
+Hooks load automatically when the plugin is installed. No configuration required.
+
+### Persistent file-backed run memory
+
+Hooks write `.agent-runs/<run-id>/memory/`:
+
+- `events.jsonl` — every event (catch-all)
+- `turns.jsonl` — UserPromptSubmit
+- `decisions.jsonl` — PreToolUse + PermissionRequest
+- `open_loops.jsonl` — PostToolUse + PostToolUseFailure + Stop
+- `handoff_current.md` — regenerated on every record; SessionStart and PostCompact inject this as context
+
+Pipeline state is now durable across context compaction. The runtime no longer depends on the model remembering the orchestrator markdown halfway through a long session.
+
+### Directive contracts (`.agent-runs/<run-id>/directive.yaml`)
+
+Operators pre-approve manifest and scope-lock content with a SHA-256-bound hash. Copy `pipelines/directive-template.yaml` to your run dir before starting. Conformant runs auto-approve manifest and plan gates. Bound hash is verified on every consult — tampering surfaces explicitly as `CONTRACT_DIVERGED` (exit 3 from `check_directive_conformance.py`) and stops the orchestrator.
+
+### Intake skill (`/agent-pipeline-claude:intake`)
+
+Soft onboarding for ideas without a manifest. Drafts `intake.md`, `manifest.yaml`, `scope-lock.yaml`, and `intake-questions.md` under `.agent-runs/<run-id>/`. Does not start the pipeline; operator completes TODOs and then runs `/agent-pipeline-claude:run resume <run-id>`.
+
+### Mem0 cross-session memory (`/agent-pipeline-claude:mem0`)
+
+Two-layer architecture:
+
+- **Layer A** (file-backed): unconditional, no network. Hooks already write this.
+- **Layer B** (Mem0): cross-session, semantically retrievable. Best-effort behind a circuit breaker.
+
+Subcommands: `init` (write `.mem0/config.json` + consent stub), `up` / `down` (OSS docker stack), `whoami` (derived identity), `test` (smoke check), `sync` (flush Layer A → Layer B), `prune` (FR-12 hygiene with interactive confirm).
+
+OSS-default per PRD FR-1. Platform mode requires explicit `consent.json` grant (FR-14). Layer A still works without Mem0 enabled.
+
+### Scope-lock authority
+
+`scripts/check_scope_lock.py` + `check_rung_file_ownership.py` + `check_release_docs_consistency.py` block work that drifts off the canonical release-plan rung. Required runs check edited paths, commit messages, and doc claims for forbidden future-rung terms.
+
+### DoD readiness gate
+
+`scripts/check_execute_readiness.py` blocks policy/verify until `implementation-report.md` declares `**DoD readiness: READY**` with a parseable `**DoD checklist: T total, R ready, B blocked, D deferred**` line where blocked=0.
+
+### Show-run-status skill (`/agent-pipeline-claude:show-run-status`)
+
+Read-only summary of a run's `.agent-runs/<run-id>/` state. Use when you need to know what's happening in a run without resuming it.
+
+---
+
+## v1.x history — read if you used v1.0.x or earlier
 
 v1.1 fixes the install/runtime adapter that v1.0.0–v1.0.2 got wrong. Plugin behavior, manifest schema, role files, and policy scripts are unchanged.
 

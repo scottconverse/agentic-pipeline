@@ -5,18 +5,119 @@ All notable changes to `agent-pipeline-claude` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — targeting v2.0.0
+## [Unreleased]
 
-**Heavier-hand redesign.** v2.0.0 takes the opposite philosophical direction from PR #22 (closed 2026-05-17) which collapsed gates and removed enforcement. v2.0 keeps the gates, adds an eleven-event Cowork lifecycle hook layer, ports directive-contract pre-approval and scope-lock authority from `agent-pipeline-codex` v0.6/v0.5.9, adds the intake skill from codex v0.8, adds persistent file-backed run memory from codex v0.9, and adds an MCP Mem0 layer for cross-session continuity. The codebases are diverging: codex stays lighter, claude takes the heavier hand because Claude historically loses focus mid-run and the runtime needs to catch it.
+## [2.0.0] — 2026-05-17
 
-### In progress (this branch: `v2.0-heavier-hand`)
+**Heavier-hand redesign.** Takes the opposite direction from PR #22 (closed 2026-05-17) which collapsed gates and removed enforcement. v2.0 keeps the gates and adds enforcement everywhere — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval, scope-lock authority, intake skill, persistent file-backed run memory, and an MCP Mem0 layer for cross-session continuity. Codex stays lighter; claude takes the heavier hand because Claude historically loses focus mid-run and the runtime needs to catch it.
 
-- Phase 1: foundation policy script ports from codex v0.9.0 — scope-lock authority, DoD readiness, decision ledger, stop validator + final-response gate + pipeline-continue, show-run-status, agent-decision-gate.
-- Phase 2: directive contracts (codex v0.6 + PR #5 amendments — bind-after-conformance, downstream re-verify, exit-3 STOP on resume mismatch).
-- Phase 3: intake skill (codex v0.8 port).
-- Phase 4: lifecycle hooks (11 Cowork events: SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, SubagentStop, Stop, SessionEnd) and persistent file-backed run memory under `.agent-runs/<run-id>/memory/`.
-- Phase 5: Mem0 MCP layer per PRD — OSS-default, Platform behind consent, two-layer architecture (file-backed unconditional + Mem0 best-effort), structured metadata taxonomy enforced by policy.
-- Phase 6: docs, cleanroom verification, audit.
+171 tests, 1 skipped (cleanroom_e2e), all green. Branch `v2.0-heavier-hand`.
+
+### Added — Phase 1: foundation policy ports (from agent-pipeline-codex v0.9.0)
+
+- `scripts/policy_utils.py` — find_repo_root, strip_yaml_comment, unsupported_yaml_constructs.
+- `scripts/scope_lock_utils.py` — release-plan rung parser, normalize_text, changed_paths, head_commit_subject.
+- `scripts/check_scope_lock.py` — `SCOPE_CONFLICT` when manifest doesn't match the canonical release-plan rung's title / proves / required_modules / scope_bullets / exit_criteria.
+- `scripts/check_rung_file_ownership.py` — `SCOPE_CONFLICT` on edited paths or commit messages containing forbidden future-rung terms.
+- `scripts/check_release_docs_consistency.py` — `SCOPE_CONFLICT` when README/CHANGELOG/docs attribute the current rung to forbidden future-rung work.
+- `scripts/check_execute_readiness.py` — blocks policy/verify when execute did not declare full DoD readiness with parseable zero-blocker checklist.
+- `scripts/check_decision_ledger.py` — validates schema-v1 NDJSON rows for `decision-ledger.ndjson`.
+- `scripts/check_pipeline_control_loop.py` — validates `active-control-state.md` against the VALID/INVALID stop-condition contract; flags unresolved Open Caveats / Release Risks sections.
+- `scripts/stop_validator.py` — shared stop-condition truth function used by every control gate. Per-stop-condition evidence validation (human gates against pipeline resume; scope conflicts against scope-lock receipt; failed-gate against run.log; credential/destructive/external/user-paused against text signals).
+- `scripts/final_response_gate.py` — pre-final-response gate; discovers active control-state files and blocks any final response while `final_response_allowed: false`.
+- `scripts/pipeline_continue.py` — prints the next executable action (CONTINUE or STOP_ALLOWED).
+- `scripts/agent_decision_gate.py` — validates agent stop/defer/skip/final decisions against control-state, evidence files, and scope-lock canonical rung. Writes `decision-ledger.ndjson` rows when `--write-ledger`.
+- `scripts/show_run_status.py` + `skills/show-run-status/` — read-only summary of a run.
+- `pipelines/scope-lock-template.yaml` — new run template.
+
+### Added — Phase 2: directive contracts (codex v0.6 + PR #5 amendments)
+
+- `scripts/directive_utils.py` — DirectiveContext, AssertionResult, load_directive, sha256_file, ensure_hash_integrity, compare_preapproved (unified-diff output), evaluate_assertions (regex/contains/section/artifact_exists/callable; callable names restricted to local public names, no dotted paths, no leading underscore).
+- `scripts/check_directive_conformance.py` — Phase A2.6 gate. Returns 0 on AUTO_APPROVE (writes directive-bound line), 1 on NO_DIRECTIVE / MISMATCH / malformed, 2 on hash-changed-since-bind, 3 on CONTRACT_DIVERGED when directive was previously bound but artifacts now diverge. PR #5 amendments all present: **bind-after-conformance**, **append-not-prepend**, **exit-3 CONTRACT_DIVERGED on resume mismatch**.
+- `scripts/check_plan_against_directive.py` — plan-gate auto-approval based on directive `acceptance.plan` assertions. **Downstream re-verifies manifest/scope conformance** (PR #5 amendment) — exits 2 on CONTRACT_DIVERGED.
+- `pipelines/directive-template.yaml` — scaffold template with documented schema.
+- `scripts/auto_promote.py` extended — adds `_check_directive_manager` which re-verifies manifest + scope-lock conformance (defense-in-depth) and evaluates `acceptance.manager` assertions. Two module-level callable helpers exposed for directive YAML reference: `no_unresolved_open_caveats`, `verifier_covers_manifest_expected_outputs`. **Claude's v1.3.1 vacuous-pass for docs-only runs is preserved unchanged.**
+
+### Added — Phase 3: intake skill (codex v0.8 port)
+
+- `skills/intake/` — `/agent-pipeline-claude:intake` captures plain-English product/repo/design/task/bug/feature descriptions and drafts `.agent-runs/<run-id>/intake.md`, `manifest.yaml`, `scope-lock.yaml`, and `intake-questions.md` without starting the pipeline. Soft onboarding doorway for ideas that don't have a manifest yet.
+
+### Added — Phase 4: lifecycle hooks + persistent file-backed run memory
+
+- `hooks/hook_runner.py` + `hooks/hook_utils.py` + `hooks/hooks.json` — **eleven Cowork lifecycle events** (codex v0.9 ships six; claude takes the heavier hand):
+    * SessionStart — inject active run context + memory handoff
+    * UserPromptSubmit — warn on stale skill names, block bypass attempts
+    * PreToolUse — classify tool risk; deny destructive / out-of-scope
+    * PermissionRequest — auto-deny dangerous; auto-allow when directive-bound
+    * PostToolUse — corrective context after failed tools
+    * **PostToolUseFailure** — dedicated failure recording with severity=high (claude-only)
+    * **PreCompact** — snapshot memory before context compaction (claude-only)
+    * **PostCompact** — re-inject handoff_current.md after compaction (claude-only)
+    * **SubagentStop** — record subagent completion to memory (claude-only)
+    * Stop — block invalid pipeline stops
+    * **SessionEnd** — final memory flush + Phase 5 Mem0 attachment point (claude-only)
+- Persistent file-backed memory under `.agent-runs/<run-id>/memory/`:
+    * `events.jsonl` — all events (catch-all)
+    * `turns.jsonl` — UserPromptSubmit
+    * `decisions.jsonl` — PreToolUse, PermissionRequest
+    * `open_loops.jsonl` — PostToolUse, PostToolUseFailure, Stop
+    * `memory_probe.log` — per-event probe log
+    * `handoff_current.md` — regenerated on every record; SessionStart and PostCompact inject this as context
+- Record schema: `{timestamp, event, run_id, stage, message <=1200 chars, metadata}`. Mirrors codex v0.9 verbatim for forward-compat with the codex Mem0 reader (PRD §4.2).
+- Hook commands resolve `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PROJECT_DIR}` (Cowork roots cwd at `.klodock` — env var is the right answer per the Cowork-hooks research and the existing memory note).
+
+### Added — Phase 5: Mem0 MCP memory layer (cross-session)
+
+Two-layer architecture per PRD:
+
+- **Layer A** (file-backed): `.agent-runs/<run-id>/memory/*.jsonl`. Unconditional. Written by hooks. Source of truth for within-run state.
+- **Layer B** (Mem0): managed Platform OR self-hosted OSS. Best-effort. Behind a circuit breaker. Source of truth for cross-session knowledge.
+
+New `memory/` package:
+
+- `memory/config.py` — `Mem0Config` + `load_config()`. Reads `.mem0/config.json` with env-only fallback (`MEM0_MODE` + `MEM0_API_KEY` or `MEM0_BASE_URL`). Returns `enabled=False` when neither present (Layer A keeps working).
+- `memory/identity.py` — `derive_identity()` implements PRD §5.2: `user_id = sha256(git user.email)[:16]` (no PII leak), `agent_id = "claude-code"`, `app_id = slug(git remote)`, `run_id = "{branch}-{short-sha}-{epoch}"`.
+- `memory/redaction.py` — `scrub()` per FR-11. Default patterns cover `sk-` / `m0-` / `gh[pousr]-` tokens, AWS access keys, BEGIN PRIVATE KEY, Bearer tokens. Default block paths: `~/.ssh`, `~/.aws`, `~/.config/gcloud`, `~/.kube/config`. **Fail-closed on malformed regex** (loses memory, never leaks secret).
+- `memory/adapter.py` — `MemoryAdapter` ABC + `NullAdapter` (used when disabled — callers never branch on enable/disable) + `PlatformAdapter` (lazy-imports `mem0ai.MemoryClient`) + `OssAdapter` (lazy-imports `mem0ai.Memory`). **`delete*` operations require `allowed_by_prune=True`** per FR-8 — the agent can never call delete directly.
+- `memory/policy.py` — `PolicyLayer` enforces:
+    * FR-6 entity scoping (writes carry user_id+agent_id+app_id+run_id; searches default to user_id+app_id; `--cross-repo` opt-in)
+    * FR-7 metadata taxonomy: closed-set `type` values `{decision, task_learning, anti_pattern, user_preference, environmental, convention, session_state}`. Unknown types rejected at the policy layer.
+    * FR-9 token-budget cap (1200 default; 1.5x overflow at session_start)
+    * FR-10 latency tracker — auto-disables prompt injection after 5 consecutive p95 violations (preserves session-start retrieval)
+    * FR-11 redaction (every write candidate scrubbed)
+    * FR-13 circuit breaker — 5 consecutive failures opens for 5 minutes; writes go to local outbox at `.mem0/outbox/`; reads return empty
+    * FR-14 consent gate — platform mode requires `.mem0/consent.json` with `grant: true` before any backend write
+- `memory/sync.py` — `flush_layer_a_to_mem0()` walks events.jsonl, picks records with valid `type`, forwards via PolicyLayer.add. Idempotent per record fingerprint (sha256 tracked in `.mem0/synced-hashes.txt`).
+
+New schema + template + CLI + skill:
+
+- `schemas/mem0.config.v1.json` — full JSON Schema with descriptions, defaults, enum constraints.
+- `pipelines/mem0-config-template.json` — starting config (`mem0 init` writes from this).
+- `scripts/mem0_bootstrap.py` — 7 subcommands: `init` / `up` / `down` / `whoami` / `test` / `sync` / `prune`.
+- `skills/mem0/SKILL.md` — `/agent-pipeline-claude:mem0 <subcommand>` operator-facing skill.
+
+### Added — tests
+
+- 8 new test files: `test_scope_lock.py`, `test_execute_readiness.py`, `test_decision_ledger.py`, `test_show_run_status.py`, `test_directive_contract.py` (11 tests including the 4 PR #5 amendment tests), `test_hooks.py` (18 tests, 12 ported + 6 for new handlers), `test_memory_layer.py` (27 tests covering every FR).
+- Existing 102 v1.3.1 tests preserved unchanged (vacuous-pass, scaffold integrity, cleanroom install, v1.3.0 redesign contract, etc.).
+- Two regression fixes on existing tests: `test_v130_redesign` regex widened to accept 2.x successors; `test_cleanroom_install` charset includes U+221A (Cowork on Windows renders the loaded-status checkmark as that codepoint).
+
+### Removed (breaking)
+
+Reused PR #22's `v2.0.0` label but reversed its direction:
+
+- **None** of v1.3.1's gates were removed. Manifest gate, plan gate, manager gate all preserved (manager auto-fires on green per v1.3.0).
+- v1.3.0 deprecated stubs (`grant-autonomous`, `run-autonomous` skills; `check_autonomous_compliance`, `check_autonomous_mode` scripts) preserved as no-op shims for backward compat — same behavior as v1.3.1.
+
+### Security / Safety
+
+- **Failure mode closed (heavier-hand intent):** Pipeline state is now durable across context compaction and session boundaries. The runtime no longer depends on the model remembering the orchestrator markdown through a long session — hooks observe every load-bearing point and write persistent records.
+- **Failure mode closed (directive):** Directive-conformant runs no longer force operators to re-type APPROVE for manifest/plan content they already authored verbatim. Reduces reflexive-approval training without weakening the gate contract.
+- **Failure mode closed (intake):** Operators no longer have to choose between a blank `new-run` skeleton and asking the model to improvise work without a manifest. `intake` provides a friendly drafting step while preserving the rule that execution starts only after manifest review.
+- **Failure mode closed (cross-session memory):** Sessions in week 2 can recall decisions from week 1 via Mem0. Decision drift across long-running projects is now mitigated at the runtime layer, not the human-discipline layer.
+- **Honest limit:** Mem0 writes are best-effort and never block the agent's response. The circuit breaker opens after 5 consecutive failures and writes go to a local outbox at `.mem0/outbox/` for next-session retry.
+- **Honest limit:** Platform mode requires explicit consent grant in `.mem0/consent.json`. OSS mode is the default for first-time users on privacy grounds.
+- **Honest limit:** The agent never calls `delete_*` operations directly. All deletes go through `pipeline mem0 prune` with explicit human confirmation.
 
 ## [1.3.1] — 2026-05-14
 
