@@ -683,6 +683,71 @@ def test_cmd_test_returns_2_on_backend_error(tmp_path, monkeypatch, capsys) -> N
     assert "connection refused" in captured.err
 
 
+def test_redaction_config_defaults_match_canonical_redaction_module() -> None:
+    """Pass 6 (audit Cluster F): RedactionConfig dataclass defaults must
+    derive from memory/redaction.py's canonical lists. Pre-Pass-6 the
+    dataclass hard-coded a narrower set (missing AWS access keys and
+    Bearer tokens) — projects that authored a `.mem0/config.json` without
+    an explicit `redaction:` block would silently get the narrower set
+    and real secrets leaked past `scrub()`."""
+    from memory.config import RedactionConfig
+    from memory.redaction import _DEFAULT_BLOCK_PATHS, _DEFAULT_SECRET_PATTERNS
+
+    rc = RedactionConfig()
+    assert rc.secret_patterns == _DEFAULT_SECRET_PATTERNS, (
+        "RedactionConfig.secret_patterns must equal redaction._DEFAULT_SECRET_PATTERNS. "
+        "Divergence here means the config layer narrows what scrub() catches."
+    )
+    assert rc.block_paths == _DEFAULT_BLOCK_PATHS, (
+        "RedactionConfig.block_paths must equal redaction._DEFAULT_BLOCK_PATHS."
+    )
+
+    # Defensive sentinels — pin the specific patterns that pre-Pass-6 were
+    # missing from the dataclass.
+    pattern_union = "|".join(rc.secret_patterns)
+    assert "AKIA" in pattern_union, "AWS access-key pattern missing from defaults"
+    assert "Bearer" in pattern_union, "Bearer-token pattern missing from defaults"
+    assert "~/.kube/config" in rc.block_paths, "~/.kube/config missing from block_paths defaults"
+
+
+def test_pipelines_template_redaction_matches_canonical() -> None:
+    """The canonical mem0-config-template.json must include the same
+    secret_patterns as the dataclass default (and by transitivity the
+    canonical _DEFAULT_SECRET_PATTERNS). Drift here means operators who
+    copy the template get a narrower set than the codebase default."""
+    import json
+    template_path = Path(__file__).resolve().parents[1] / "pipelines" / "mem0-config-template.json"
+    template = json.loads(template_path.read_text(encoding="utf-8"))
+    patterns = template["redaction"]["secret_patterns"]
+    paths = template["redaction"]["block_paths"]
+
+    # Pre-Pass-6 missing patterns must be present now.
+    pattern_union = "|".join(patterns)
+    assert "AKIA" in pattern_union, "template missing AWS access-key pattern"
+    assert "Bearer" in pattern_union, "template missing Bearer-token pattern"
+    assert "~/.kube/config" in paths, "template missing ~/.kube/config block path"
+
+
+def test_scaffold_payload_redaction_matches_canonical() -> None:
+    """The scaffold mirror under skills/pipeline-init/references/.../
+    mem0-config-template.json is what pipeline-init copies into operator
+    projects. It must agree with the canonical template on redaction
+    defaults."""
+    import json
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "skills" / "pipeline-init" / "references" / "pipeline-payload"
+        / "pipelines" / "mem0-config-template.json"
+    )
+    template = json.loads(template_path.read_text(encoding="utf-8"))
+    patterns = template["redaction"]["secret_patterns"]
+    paths = template["redaction"]["block_paths"]
+    pattern_union = "|".join(patterns)
+    assert "AKIA" in pattern_union
+    assert "Bearer" in pattern_union
+    assert "~/.kube/config" in paths
+
+
 def test_cmd_test_oss_hint_mentions_8888_when_misconfigured(tmp_path, monkeypatch, capsys) -> None:
     """When OSS mode is configured and the backend errors, the hint must
     cite the canonical :8888 port so operators can self-diagnose a

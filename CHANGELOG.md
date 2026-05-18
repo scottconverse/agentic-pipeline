@@ -7,6 +7,16 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — audit Pass 6 (Cluster F) — `secret_patterns` defaults match canonical
+
+The `memory/redaction.py` module exports `_DEFAULT_SECRET_PATTERNS` covering `sk-`/`m0-`/`gh[pousr]-` tokens, BEGIN PRIVATE KEY blocks, AWS access keys (`AKIA…`), and Bearer tokens. The `memory/config.py:RedactionConfig` dataclass shipped a narrower default — only the first two patterns. Because `load_config()` falls back to `RedactionConfig().secret_patterns` whenever a project's `.mem0/config.json` lacks an explicit `redaction:` block (or sets it to empty), a `.mem0/config.json` silently downgraded the redaction surface — AWS keys and Bearer tokens were passed through `scrub()` undetected. Same drift in `block_paths` (`~/.kube/config` missing from the dataclass default).
+
+- `memory/config.py`: `RedactionConfig.secret_patterns` and `.block_paths` defaults are now imported from `memory/redaction.py` (`_DEFAULT_SECRET_PATTERNS`, `_DEFAULT_BLOCK_PATHS`). Single source of truth — adding a new canonical pattern propagates without a config-layer edit.
+- `pipelines/mem0-config-template.json` + `skills/pipeline-init/.../mem0-config-template.json` (mirror): templates now include all four canonical patterns and the `~/.kube/config` block path. Operators who copy the template into `.mem0/config.json` get the full set out of the box.
+- 3 new regression tests in `tests/test_memory_layer.py`: `test_redaction_config_defaults_match_canonical_redaction_module` (dataclass ↔ module lockstep), `test_pipelines_template_redaction_matches_canonical` (canonical template includes AKIA + Bearer + ~/.kube/config), `test_scaffold_payload_redaction_matches_canonical` (pipeline-payload mirror lockstep).
+
+**Security impact:** `.mem0/config.json` projects that previously relied on dataclass defaults now block AWS access keys and Bearer tokens. No code path widened — only the previously-narrowed default does. If a project explicitly set `redaction.secret_patterns: [...]` in their `.mem0/config.json`, their override is unchanged.
+
 ### Fixed — audit Pass 5 (Cluster E) — pipeline-init uses AskUserQuestion modal
 
 v1.3.0 retired the chat-`APPROVE` ceremony for the three run-time gates (manifest, plan, manager) because the LLM kept halting on the interpretive surface area of free-form gate text. The pipeline-init skill missed that bandwagon — `skills/pipeline-init/SKILL.md` explicitly instructed Claude to "Render the orientation summary as a plain chat message — do not use `AskUserQuestion` for the APPROVE gate." Operators saw modal gates inside `/run` but free-text gates inside `/pipeline-init`. v2.0's "heavier hand" pitch couldn't credibly claim modal-everywhere when the front door still asked operators to type APPROVE.

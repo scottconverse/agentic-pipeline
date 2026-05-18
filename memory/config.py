@@ -15,6 +15,16 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Source the canonical secret/path lists from redaction so config defaults
+# can never narrow them. Pre-Pass-6 RedactionConfig hard-coded a shorter
+# list (missing AWS access keys and Bearer tokens, and `~/.kube/config`);
+# whenever a project had a `.mem0/config.json` without an explicit
+# `redaction:` block, `tuple(redaction_raw.get("secret_patterns") or
+# RedactionConfig().secret_patterns)` substituted the narrower set and
+# real secrets leaked past `scrub()`. The audit (ENG cluster F) flagged
+# this as the divergence to fix at the source.
+from .redaction import _DEFAULT_BLOCK_PATHS, _DEFAULT_SECRET_PATTERNS
+
 
 @dataclass(frozen=True)
 class LatencyBudget:
@@ -50,15 +60,12 @@ class WriteConfig:
 
 @dataclass(frozen=True)
 class RedactionConfig:
-    secret_patterns: tuple[str, ...] = (
-        r"(?:sk|m0|gh[pousr])-[A-Za-z0-9_-]{20,}",
-        r"-----BEGIN [A-Z ]+PRIVATE KEY-----",
-    )
-    block_paths: tuple[str, ...] = (
-        "~/.ssh",
-        "~/.aws",
-        "~/.config/gcloud",
-    )
+    # Defaults derive from the canonical lists in memory/redaction.py so
+    # the config layer cannot silently narrow what `scrub()` would catch.
+    # Override via .mem0/config.json (an explicit `redaction.secret_patterns:
+    # []` still wins — empty-list opt-out is a deliberate operator choice).
+    secret_patterns: tuple[str, ...] = _DEFAULT_SECRET_PATTERNS
+    block_paths: tuple[str, ...] = _DEFAULT_BLOCK_PATHS
 
 
 @dataclass(frozen=True)
