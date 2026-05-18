@@ -369,6 +369,17 @@ def test_landing_page_first_use_does_not_say_approve_in_chat():
     assert "You approve in chat" not in text
 
 
+def test_landing_page_problem_section_does_not_say_approve_in_chat():
+    """The Problem section's value pitch (`Every run starts with a
+    manifest you approve in chat.`) was missed by Pass 11b's first pass.
+    The lowercase 'approve in chat' phrase must be replaced with the
+    modal description anywhere it appears in operator-facing copy."""
+    text = _read(REPO_ROOT / "docs" / "index.html")
+    assert "approve in chat" not in text, (
+        "landing page still has 'approve in chat' operator-facing copy"
+    )
+
+
 def test_user_manual_glossary_manifest_uses_modal_language():
     """USER-MANUAL Glossary `Manifest` entry must describe the gate as
     a modal, not `gated on chat APPROVE`."""

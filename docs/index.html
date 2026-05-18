@@ -186,7 +186,7 @@ footer a { color: var(--fg-muted); }
   <h2>The problem</h2>
   <p class="lead">Multi-step agentic work drifts. The assistant runs a plan, then in the middle of step 4 it reinterprets the goal, edits files it wasn't supposed to touch, and the user discovers what it actually did only after the damage is done.</p>
   <p>The usual responses don't work. A second AI auditing the first AI gets caught in the same drift. A more careful single-AI loop just papers over the drift class. A long human checklist is unenforceable; people skim.</p>
-  <p>This plugin enforces a structural pattern. Every run starts with a manifest you approve in chat. Stages are spawned as Agent sub-tasks with bounded role files. The drift-detector reads the actual diff and flags every file change outside the manifest. The critic runs as a separate Agent so it can't co-conspire. Auto-promote is six machine-checkable conditions; manager-merge runs only when those pass.</p>
+  <p>This plugin enforces a structural pattern. Every run starts with a manifest you approve via a one-click <code>AskUserQuestion</code> modal. Stages are spawned as Agent sub-tasks with bounded role files. The drift-detector reads the actual diff and flags every file change outside the manifest. The critic runs as a separate Agent so it can't co-conspire. Auto-promote is six machine-checkable conditions; manager-merge runs only when those pass.</p>
 </section>
 
 <section id="what-it-does">
