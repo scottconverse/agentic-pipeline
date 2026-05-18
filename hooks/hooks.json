@@ -1,0 +1,143 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py\" SessionStart",
+            "timeout": 30,
+            "statusMessage": "Loading Agent Pipeline run context"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py\" UserPromptSubmit",
+            "timeout": 30,
+            "statusMessage": "Checking Agent Pipeline prompt context"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py\" PreToolUse",
+            "timeout": 30,
+            "statusMessage": "Checking Agent Pipeline tool policy"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py\" PermissionRequest",
+            "timeout": 30,
+            "statusMessage": "Checking Agent Pipeline approval policy"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py\" PostToolUse",
+            "timeout": 30,
+            "statusMessage": "Reviewing Agent Pipeline tool result"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py\" PostToolUseFailure",
+            "timeout": 30,
+            "statusMessage": "Recording Agent Pipeline tool failure"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py\" PreCompact",
+            "timeout": 30,
+            "statusMessage": "Snapshotting Agent Pipeline memory before compaction"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py\" PostCompact",
+            "timeout": 30,
+            "statusMessage": "Re-injecting Agent Pipeline memory after compaction"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py\" SubagentStop",
+            "timeout": 30,
+            "statusMessage": "Recording Agent Pipeline subagent completion"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py\" Stop",
+            "timeout": 30,
+            "statusMessage": "Checking Agent Pipeline stop condition"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook_runner.py\" SessionEnd",
+            "timeout": 30,
+            "statusMessage": "Flushing Agent Pipeline memory at session end"
+          }
+        ]
+      }
+    ]
+  }
+}

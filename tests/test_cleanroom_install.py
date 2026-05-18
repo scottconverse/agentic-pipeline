@@ -37,6 +37,7 @@ def _project_files_to_copy() -> list[str]:
         "commands",
         "pipelines",
         "scripts",
+        "hooks",
         "ARCHITECTURE.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
