@@ -100,10 +100,18 @@ exist.
    - `## Order of operations` — three sentences on how changes flow (e.g. "branch from main, work in slices, tag at rung close").
    - `## Tooling` — language, test runner, lint, type checker, pre-commit hooks.
    - `## Non-negotiables` — empty placeholder for the user to fill in.
+   - **(v2.1.0) `## Memory precedence during pipeline runs`** — fixed boilerplate block stating: *"During active agent-pipeline-claude runs, the pipeline's gate budget and hook policy are authoritative. Operator-layer memory rules about asking-before-deciding (e.g. `feedback_no_unilateral_product_decisions.md`) apply OUTSIDE pipeline runs only. Inside a run, the modal-budget hook blocks AskUserQuestion outside declared gates; the adopt-and-proceed pattern from `skills/run/references/run.md` governs how researcher recommendations are bound."* This boilerplate makes the precedence explicit at every project root, since memory files load globally and operators may not realize their broad rules conflict with the pipeline's autonomy contract.
 
    The user is expected to edit it. The plugin gives a starting shape, not the final word.
 
-5. **Final scaffold report.** Send a chat message:
+5. **(v2.1.0) `SPEC.md` project-shape field** — when scaffolding a greenfield SPEC.md (greenfield handling section below), include a `project_shape: <variant>` field near the top. Recognized values:
+   - `single-codebase` (default; existing rung-versioned project)
+   - `multi-repo-admin` (orchestration root with per-target-repo work clones under `_repos/`; non-numeric rung names allowed)
+   - `library` (single repo without a rung-versioned release plan; SPEC.md is canonical rung-equivalent)
+
+   Policy scripts (`check_allowed_paths`, `check_scope_lock`) read this field and branch their logic. Without it, they default to `single-codebase` (back-compat).
+
+6. **Final scaffold report.** Send a chat message:
    ```
    Scaffold complete.
 
