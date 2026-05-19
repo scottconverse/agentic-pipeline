@@ -585,18 +585,135 @@ def classify_tool_risk(event: dict[str, Any], runs: list[ActiveRun]) -> tuple[st
     if runs and _touches_outside_allowed_paths(event, runs[0].run_dir):
         severity = "deny"
         reasons.append("write target appears outside manifest allowed_paths during an active run")
-    # Audit Pass 10 / Cluster I: only warn on contract-artifact touches
-    # for WRITE-class operations. Reads (cat, grep, Read tool) are the
-    # safe, encouraged behavior and shouldn't get the same warning as
-    # someone editing the manifest mid-run.
-    if (
-        ("directive.yaml" in haystack or "manifest.yaml" in haystack or "scope-lock.yaml" in haystack)
-        and not _is_read_only_operation(event)
-    ):
-        if severity != "deny":
+    # v2.1.0: path-aware contract-artifact detection. The v2.0.x version
+    # did a substring search on the lowercased command/content, which
+    # produced false positives when the AGENT's own source/test code
+    # mentioned "manifest.yaml" / "scope-lock.yaml" / "directive.yaml"
+    # by NAME (e.g. writing test fixtures, documenting hooks, building
+    # the policy scripts themselves). This refinement checks the actual
+    # write TARGET path -- the only place "contract artifact touched"
+    # genuinely indicates a contract mutation.
+    contract_touched, contract_path = _is_contract_artifact_write(event, runs)
+    if contract_touched:
+        # Post-pin manifest mutations are DENY (not warn): the preflight
+        # SHA pin marks the manifest as immutable for the rest of the
+        # run. Editing it after the pin breaks the integrity contract
+        # and forces auto-promote into the manual gate path.
+        if (
+            contract_path
+            and contract_path.name == "manifest.yaml"
+            and runs
+            and (contract_path.parent / "manifest.sha").exists()
+        ):
+            severity = "deny"
+            reasons.append(
+                "post-pin manifest mutation: the run's manifest.sha pin file exists, "
+                "marking this manifest as immutable. Any further edit breaks the "
+                "integrity contract. If the manifest is genuinely wrong, BLOCK the "
+                "current run and intake a corrected one."
+            )
+        elif severity != "deny":
             severity = "warn"
-        reasons.append("pipeline contract artifact touched")
+            reasons.append("pipeline contract artifact touched")
+        else:
+            reasons.append("pipeline contract artifact touched")
     return severity, reasons
+
+
+_CONTRACT_ARTIFACT_NAMES = frozenset(
+    {"manifest.yaml", "scope-lock.yaml", "directive.yaml", "active-control-state.md"}
+)
+
+
+def _is_contract_artifact_write(
+    event: dict[str, Any], runs: list[ActiveRun]
+) -> tuple[bool, Path | None]:
+    """Return (True, target_path) iff the tool call writes to a contract artifact.
+
+    Distinguishes write-class tools (Write, Edit, MultiEdit, NotebookEdit)
+    where the target file_path is structured and unambiguous, from Bash
+    commands where any string can appear. For Bash, we only flag commands
+    that perform a write redirect or in-place edit referencing a contract
+    artifact file in a path that resolves under an active run dir.
+
+    Returns (False, None) for read-only tool calls, for write-class tools
+    whose target isn't a contract artifact name, and for the agent's own
+    source code / test fixtures that happen to mention contract artifact
+    NAMES inside Bash command content or Write content (the v2.0.x false-
+    positive class).
+    """
+    if not isinstance(event, dict):
+        return (False, None)
+    tool_name = event.get("tool_name") or ""
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return (False, None)
+    # Read-only tools never touch contract artifacts in a write sense.
+    if tool_name in _READ_ONLY_TOOL_NAMES:
+        return (False, None)
+    # Write-class tools: file_path is structured.
+    if tool_name in {"Write", "Edit", "MultiEdit", "NotebookEdit"}:
+        file_path = tool_input.get("file_path") or ""
+        if not isinstance(file_path, str) or not file_path:
+            return (False, None)
+        try:
+            resolved = Path(file_path).resolve()
+        except Exception:
+            return (False, None)
+        if resolved.name not in _CONTRACT_ARTIFACT_NAMES:
+            return (False, None)
+        # Active-run match: best signal, gives us run_dir + the resolved
+        # path for the post-pin deny check.
+        for r in runs:
+            try:
+                resolved.relative_to(r.run_dir.resolve())
+                return (True, resolved)
+            except ValueError:
+                continue
+        # No active run match. Still flag if the path string indicates a
+        # run dir (.agent-runs/<id>/manifest.yaml etc.) -- the agent is
+        # touching a contract artifact even if our active-run discovery
+        # didn't pick it up. Don't flag .pipelines/manifest-template.yaml
+        # or similar non-run paths -- those are legitimate edits to
+        # scaffolding/templates, not to a specific run's contract.
+        normalized = file_path.replace("\\", "/")
+        if "/.agent-runs/" in normalized or normalized.startswith(".agent-runs/"):
+            return (True, resolved)
+        return (False, None)
+    # Bash: flag only when the command does a redirect or in-place edit
+    # AGAINST a contract artifact path that lives in an active run dir.
+    if tool_name == "Bash":
+        if _is_read_only_operation(event):
+            return (False, None)
+        command = tool_command(event)
+        haystack = command.lower()
+        bash_contract = False
+        for name in _CONTRACT_ARTIFACT_NAMES:
+            if name in haystack:
+                # Only count if the command does a write (redirect or
+                # sed -i / tee / cp into). Reads/greps of these files
+                # are legitimate.
+                if (
+                    " > " in command
+                    or " >> " in command
+                    or " >>" in command
+                    or " >" in command
+                    or "sed -i" in command
+                    or "tee " in command
+                    or "cp " in command
+                    or "mv " in command
+                ):
+                    bash_contract = True
+                    break
+        if bash_contract:
+            # Best-effort: figure out which file inside a run dir was
+            # the target (for the post-pin manifest check downstream).
+            # Resolution is approximate from a Bash command; the deny
+            # check downstream tolerates a None path (only the warn
+            # message fires, not the post-pin deny).
+            return (True, None)
+        return (False, None)
+    return (False, None)
 
 
 def permission_decision(event: dict[str, Any], runs: list[ActiveRun]) -> dict[str, Any] | None:
