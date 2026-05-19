@@ -6,7 +6,19 @@ The plugin reads your project's spec, drafts a per-run scope contract from it, a
 
 One namespaced skill. No YAML for you to hand-author.
 
-**Current release: v2.0.0** — heavier-hand redesign with hooks-based enforcement, directive contracts, intake skill, persistent file-backed run memory, and an MCP Mem0 layer for cross-session continuity. [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
+**Current release: v2.1.0** — autonomy hardening. Closes five v2.0.x structural gaps: modal-budget hook prevents orchestrator-manufactured modals between gates, stage-artifact format hook unblocks auto-promote, project-shape adapter unblocks multi-repo-admin runs, path-aware contract-artifact detection eliminates the wallpaper-warning false positives, post-pin manifest mutations are now DENY. [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
+
+## What's new in v2.1.0
+
+v2.1 closes five autonomy gaps that v2.0.x exposed in real multi-run sessions. The framework's autonomy contract was being systematically circumvented by orchestrator-manufactured modals, freeform stage-artifact verdicts that defeated auto-promote, and template-mismatch policy failures on multi-repo-admin shapes. v2.1.0 makes the contract mechanical:
+
+- **Modal-budget hook** blocks `AskUserQuestion` outside declared `gate: human_approval` stages. The v1.3.0 design eliminated chat-APPROVE ceremony; the v2.0.x failure mode was modals between gates (turning 3 clicks per run into 15+). The hook closes that loophole.
+- **Stage-artifact format hook** denies `Write` calls saving verifier/critic/drift reports without the required `**Criteria: ...**` / `**Findings: ...**` / `**Drift: ...**` marker lines. `auto_promote.py` is a marker-line scanner; freeform prose verdicts now fail at write time instead of failing auto-promote downstream.
+- **Project-shape adapter** lets policy scripts branch on `project_shape:` (single-codebase / multi-repo-admin / library). Multi-repo-admin runs no longer crash `check_allowed_paths` on non-git roots or fail `check_scope_lock` on non-numeric rung names.
+- **Path-aware contract-artifact detection** eliminates the v2.0.x false-positive class where framework edits, test files, and docs that mentioned `manifest.yaml` / `scope-lock.yaml` by string triggered constant "contract artifact touched" warnings.
+- **Post-pin manifest writes are DENY** (was warn). After preflight pins the SHA, any further write to the manifest is rejected at hook time instead of caught at the policy stage.
+
+Plus `skills/run/references/run.md` codifies the adopt-and-proceed pattern: when a stage returns recommendations, the orchestrator adopts them, records in `director-decisions.md`, narrates one line, and proceeds — modal only at the three declared gates. Operator-layer memory rules about "ask before deciding" are suspended during pipeline runs.
 
 ## What's new in v2.0.0
 
@@ -325,7 +337,7 @@ If you skipped v1.0 and are upgrading directly from v0.5.x:
 - Manifest is drafted from your project's spec; you no longer hand-author 11 fields from blank.
 - All three human gates are `AskUserQuestion` modal prompts (APPROVE / REPLAN / BLOCK as labels — one click each). The v0.5.x free-form chat-APPROVE ceremony was retired in v1.3.0.
 
-Run `cd ~/.claude/plugins/marketplaces/agent-pipeline-claude && git pull && git checkout v2.0.0` to upgrade, then fully restart Cowork. See [CHANGELOG.md](CHANGELOG.md) for full migration notes.
+Run `cd ~/.claude/plugins/marketplaces/agent-pipeline-claude && git pull && git checkout v2.1.0` to upgrade, then fully restart Cowork. See [CHANGELOG.md](CHANGELOG.md) for full migration notes.
 
 ## Contributing
 

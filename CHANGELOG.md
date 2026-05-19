@@ -7,6 +7,71 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-05-19
+
+**Autonomy hardening.** Closes five structural gaps that v2.0.x exposed in the github-cleanup-2026-05-18 + python-311-honesty sessions. The framework's autonomy contract was systematically circumvented by orchestrator-manufactured modals, freeform stage-artifact verdicts that defeated auto-promote, and template-mismatch policy failures on multi-repo-admin project shapes. v2.1.0 makes the contract mechanical.
+
+**Final tag: 329 tests passing, 1 skipped (cleanroom_e2e).** 5 new test files (`test_modal_budget.py`, `test_stage_artifact_format.py`, `test_project_shape.py`, `test_contract_artifact_precision.py`, hook + script integration coverage), no regressions in the 289-test v2.0.0 baseline.
+
+### Added — modal-budget hook (`PreToolUse:AskUserQuestion`)
+
+During an active non-drafting pipeline run, `AskUserQuestion` is permitted only when `current_stage` matches a declared `gate: human_approval` stage in the pipeline yaml. Any modal fired at a non-gate stage returns deny with a structured reason naming the legitimate gates and pointing at the adopt-and-proceed alternative. Closes the v2.0.x loophole that produced 12+ unnecessary modals per run (manifest gate + plan gate + manager gate = 3 legitimate; everything else previously slipped through).
+
+- New: `hook_utils.modal_budget_decision` (146 lines)
+- Updated: `hook_runner.handle_pre_tool_use` calls it before `classify_tool_risk`
+- Updated: `hooks.json` `PreToolUse` matcher adds `AskUserQuestion`
+- 8 new tests in `tests/test_modal_budget.py`
+- Fail-open paths: no active run, drafting run, missing pipeline yaml, unknown current_stage with completed gate
+
+### Added — stage-artifact format conformance hook (`PreToolUse:Write`)
+
+`auto_promote.py` is a mechanical marker-line scanner. Reports without the expected marker lines fail auto-promote and route the run through the manual manager gate even when quality is clean. This hook denies `Write` calls saving the three stage reports inside an active run dir if the inbound content lacks its required marker:
+
+- `verifier-report.md`: `**Criteria: <T> total, <M> MET, <P> PARTIAL, <N> NOT MET, <A> NOT APPLICABLE**`
+- `critic-report.md`: `**Findings: <T> total, <B> blocker, <C> critical, <M> major, <N> minor**`
+- `drift-report.md`: `**Drift: <T> total, <B> blocker**`
+
+Gating: only inside `.agent-runs/<id>/`, only for the three filenames, only under an active non-drafting run. 9 new tests in `tests/test_stage_artifact_format.py`.
+
+### Added — project-shape adapter for multi-repo-admin runs
+
+Optional `project_shape:` field in `SPEC.md` (or `manifest.yaml` fallback). Three recognized values: `single-codebase` (default), `multi-repo-admin`, `library`. Three policy checks branch on it:
+
+- `check_allowed_paths` skips the git-diff check with PASS-degraded when shape is multi-repo-admin AND root is not a git working tree
+- `check_scope_lock` accepts non-numeric rung names (e.g. `github-cleanup-2026-05-18`) under multi-repo-admin and library shapes via full-doc text match instead of strict numeric-rung header regex
+- `check_no_todos` adds `_repos/` to `DEFAULT_EXCLUDED_DIRS` (cloned third-party project source under `_repos/` no longer flagged for TODO markers, which produced false positives on detection-regex strings)
+
+New helper: `policy_utils.read_project_shape(repo_root)` + `policy_utils.is_git_repo(repo_root)`. 11 new tests in `tests/test_project_shape.py`. Back-compat preserved: single-codebase shape still fails on non-numeric rungs.
+
+### Changed — path-aware contract-artifact detection + post-pin manifest DENY
+
+The v2.0.x `contract artifact touched` warning did a substring search on lowercased command/content for `manifest.yaml` / `scope-lock.yaml` / `directive.yaml`. This produced constant false positives on every framework edit, test fixture, or doc that mentioned those names by string — operators learned to dismiss the warning, exactly the wallpaper-warning failure mode the hook was designed to prevent.
+
+v2.1.0 checks the actual write TARGET PATH:
+- Write/Edit/MultiEdit: basename matches a contract artifact name AND path is inside `.agent-runs/<id>/`
+- Bash: command performs a write redirect / sed -i / tee / cp / mv targeting one of the contract names (reads like `cat`, `grep`, `head` no longer warn)
+
+Additionally, post-pin manifest mutations are now DENY (was warn). After preflight writes `manifest.sha`, any further write to that manifest breaks the integrity contract. The DENY reason names the post-pin condition and points at BLOCK-and-intake-corrected as the path forward. scope-lock and active-control-state writes after the pin still warn (legitimate operator-controlled mid-run changes).
+
+12 new tests in `tests/test_contract_artifact_precision.py` cover false-positive prevention (5 cases), positive regression guards (4 cases), and post-pin DENY behavior (3 cases including the scope-lock-only-warns case).
+
+### Changed — `run.md` skill text codifies adopt-and-proceed
+
+New "Adopt-and-proceed (v2.1.0)" section in `skills/run/references/run.md`. When a stage returns recommendations on decisions, the default is: ADOPT, record in `director-decisions.md`, narrate one line, proceed. Modal only when (a) outside arc authorization, (b) genuinely equally-strong with no analytical basis, or (c) the framework's declared gate.
+
+Also documents memory-rule precedence inside pipeline runs: operator-layer ad-hoc memory rules (e.g. `feedback_no_unilateral_product_decisions.md`) are SUSPENDED during active runs. The pipeline's gate budget is authoritative. Closes the conflict that pushed the orchestrator toward modal-prolific behavior despite the v1.3.0 design.
+
+### Changed — `pipeline-init.md` scaffolds memory-precedence + project-shape
+
+Pipeline-init's CLAUDE.md scaffold gains a fixed "Memory precedence during pipeline runs" section stating the precedence explicitly at every project root. SPEC.md scaffolding gains a `project_shape:` field declaration in the greenfield handling section.
+
+### Migration
+
+- Existing v2.0.0 runs in flight: no migration required. New runs pick up the new hooks automatically once the install refreshes.
+- Projects using single-codebase shape: no SPEC.md change required (default is single-codebase).
+- Projects that ran into template mismatches in v2.0.x: add `project_shape: multi-repo-admin` to SPEC.md.
+- Operators who previously fired modals between gates: the modal-budget hook now blocks those. Adopt the recommendations in `director-decisions.md` and proceed without the modal.
+
 ## [2.0.0] — 2026-05-18
 
 **Heavier-hand redesign.** Takes the opposite direction from PR #22 (closed 2026-05-17) which collapsed gates and removed enforcement. v2.0 keeps the gates and adds enforcement everywhere — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval, scope-lock authority, intake skill, persistent file-backed run memory, and an MCP Mem0 layer for cross-session continuity. Codex stays lighter; claude takes the heavier hand because Claude historically loses focus mid-run and the runtime needs to catch it.
