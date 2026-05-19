@@ -365,11 +365,23 @@ def test_post_tool_use_contract_artifact_warning_does_not_block_on_success(tmp_p
     """Phase 6.c bug fix: writing to a contract artifact successfully should
     surface additionalContext as a warning - NOT a decision: block. Earlier
     behavior rendered every successful contract-artifact write as a red
-    blocking error in Cowork."""
+    blocking error in Cowork.
+
+    v2.2.0 update: the test event now sets ``tool_name: 'Write'`` because
+    the path-aware contract-artifact detector (extended to
+    tool_failure_context in v2.2.0) requires the structured tool_name to
+    distinguish writes from reads/JSON-dumped-input false-positives.
+    """
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    # v2.2.0: the contract-artifact path must live inside an active run
+    # dir for the v2.1.0 path-aware detector to flag it (the detector
+    # specifically excludes touches to non-run files that happen to share
+    # the contract-artifact name).
+    run = _write_active_run(tmp_path)
     event = {
         "cwd": str(tmp_path),
-        "tool_input": {"file_path": str(tmp_path / "manifest.yaml"), "content": "ok"},
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(run / "manifest.yaml"), "content": "ok"},
         "tool_response": {"exit_code": 0, "stdout": "wrote 8 bytes"},
     }
 

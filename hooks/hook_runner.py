@@ -31,6 +31,9 @@ try:
         classify_tool_risk,
         discover_active_runs,
         modal_budget_decision,
+        policy_recheck_decision,
+        pop_pending_recheck_on_bash_success,
+        record_pending_recheck_for_write,
         stage_artifact_format_decision,
         permission_decision,
         prompt_bypass_context,
@@ -51,6 +54,9 @@ except ModuleNotFoundError:  # pragma: no cover - package import from tests
         classify_tool_risk,
         discover_active_runs,
         modal_budget_decision,
+        policy_recheck_decision,
+        pop_pending_recheck_on_bash_success,
+        record_pending_recheck_for_write,
         stage_artifact_format_decision,
         permission_decision,
         prompt_bypass_context,
@@ -110,6 +116,22 @@ def handle_user_prompt_submit(event: dict) -> int:
 def handle_pre_tool_use(event: dict) -> int:
     root = repo_root_from_event(event)
     runs = discover_active_runs(root)
+    # v2.2.0 hook-acknowledgement enforcement — check BEFORE all other
+    # PreToolUse decision functions. If a prior write touched a contract
+    # artifact and the operator hasn't run the required policy recheck
+    # yet, deny non-recheck operations. Closes the v2.0.x "noted,
+    # continuing" failure mode where contract-artifact-touched warnings
+    # were acknowledged conversationally and immediately ignored.
+    recheck_decision = policy_recheck_decision(event, runs)
+    if recheck_decision is not None:
+        reason = recheck_decision.get("hookSpecificOutput", {}).get(
+            "permissionDecisionReason", "policy recheck required"
+        )
+        append_hook_event(root, "PreToolUse", "policy-recheck deny: " + reason[:200])
+        record_hook_memory(
+            root, "PreToolUse", reason[:400], {"severity": "deny", "rule": "policy_recheck"}
+        )
+        return write_json(recheck_decision)
     # v2.1.0 modal-budget enforcement — check BEFORE classify_tool_risk
     # because the AskUserQuestion path is a structural concern (where in
     # the pipeline are we?) not a content-risk concern (what command?).
@@ -183,12 +205,41 @@ def handle_post_tool_use(event: dict) -> int:
         no decision: block. Earlier behavior returned block here too,
         which made every successful write to manifest/scope-lock/directive
         render as a red error in Cowork even though the write succeeded.
+
+    v2.2.0 extensions (hook-acknowledgement enforcement):
+      * On successful Write/Edit/MultiEdit/NotebookEdit to a contract
+        artifact -> append the required policy recheck command to the
+        run's ``pending-policy-recheck.txt`` sidecar.
+      * On successful Bash that matches a pending recheck command ->
+        pop that line from the sidecar.
+      Both side-effects are best-effort: failures to update the sidecar
+      do not block the tool result. The next PreToolUse will re-evaluate
+      from the persisted sidecar state.
     """
     root = repo_root_from_event(event)
+    runs = discover_active_runs(root)
+    failed = _tool_response_failed(event.get("tool_response"))
+    # v2.2.0 sidecar updates fire only on success. The PreToolUse-side
+    # enforcement reads the sidecar on the next call, so these
+    # post-write/post-bash side-effects are what feed the deny path.
+    if not failed:
+        appended = record_pending_recheck_for_write(event, runs)
+        if appended:
+            append_hook_event(root, "PostToolUse", "policy-recheck pending: " + appended[:200])
+            record_hook_memory(
+                root, "PostToolUse", "policy-recheck pending: " + appended[:300],
+                {"severity": "info", "rule": "policy_recheck_pending"},
+            )
+        popped = pop_pending_recheck_on_bash_success(event, runs)
+        if popped:
+            append_hook_event(root, "PostToolUse", "policy-recheck cleared: " + popped[:200])
+            record_hook_memory(
+                root, "PostToolUse", "policy-recheck cleared: " + popped[:300],
+                {"severity": "info", "rule": "policy_recheck_cleared"},
+            )
     context = tool_failure_context(event)
     if not context:
         return 0
-    failed = _tool_response_failed(event.get("tool_response"))
     append_hook_event(root, "PostToolUse", context)
     record_hook_memory(root, "PostToolUse", context, {"blocked": failed})
     payload: dict = {

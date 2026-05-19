@@ -7,6 +7,45 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — hook-acknowledgement enforcement (`PreToolUse` + `PostToolUse`)
+
+Closes the v2.0.x "noted, continuing" failure mode where contract-artifact-touched warnings were acknowledged conversationally and immediately ignored. The hook now forces the orchestrator to actually re-run policy checks before any further write or release operation, instead of just claiming it considered them.
+
+Mechanism: a sidecar file `.agent-runs/<run-id>/pending-policy-recheck.txt` lists outstanding recheck commands, one per line. PreToolUse denies `Write`/`Edit`/`MultiEdit`/`NotebookEdit` and non-recheck `Bash` while the sidecar is non-empty. PostToolUse appends on contract-artifact write success and pops on recheck Bash success. Read-only tools (`Read`, `Grep`, `Glob`) get a budget of 3 calls between sidecar appends and the mandatory recheck.
+
+Mapping contract artifact → required recheck:
+- `manifest.yaml` → `python scripts/policy/check_manifest_immutable.py --check --run <id>`
+- `scope-lock.yaml` → `python scripts/policy/check_scope_lock.py --run <id>`
+- `directive.yaml` → `python scripts/policy/check_directive_conformance.py --run <id>`
+
+`python scripts/policy/run_all.py --run <id>` is the umbrella runner — satisfies any pending line and clears the whole sidecar in one shot.
+
+`active-control-state.md` is in the contract-artifact name set for the warn-level signal but is mutated by the orchestrator during every stage transition — it is NOT an immutable contract and does NOT require a recheck. Only the immutable trio triggers the obligation.
+
+- New: `hook_utils.policy_recheck_decision` (PreToolUse deny path)
+- New: `hook_utils.record_pending_recheck_for_write` (PostToolUse append)
+- New: `hook_utils.pop_pending_recheck_on_bash_success` (PostToolUse pop)
+- New: `hook_utils._bash_matches_recheck` (script-name match helper)
+- New constants: `_REQUIRED_RECHECK_FOR_CONTRACT_NAME`, `_RECHECK_SCRIPT_NAMES`, `_MAX_READ_ONLY_BEFORE_RECHECK = 3`, `_PENDING_RECHECK_SIDECAR`, `_PENDING_RECHECK_COUNTER`
+- Updated: `hook_runner.handle_pre_tool_use` calls `policy_recheck_decision` before `modal_budget_decision`
+- Updated: `hook_runner.handle_post_tool_use` calls `record_pending_recheck_for_write` and `pop_pending_recheck_on_bash_success` on tool success
+- 25 new tests in `tests/test_hook_ack_enforcement.py` covering record, allow, deny, pop, budget, drafting, idempotency, AskUserQuestion delegation to modal_budget, run_all umbrella
+
+Fail-open paths: no active run, all runs in drafting state, no pending entries on any active run. The deny only fires when the system is genuinely in unknown policy state and the operator has not yet cleared it.
+
+### Fixed — path-aware contract-artifact detection extended to `tool_failure_context`
+
+The v2.1.0 release fixed the contract-artifact false-positive class in `classify_tool_risk` but `tool_failure_context` was missed — it still used the substring-only check that fired on any Edit/Write whose `tool_input` (JSON-dumped) contained `manifest.yaml` / `scope-lock.yaml` / `directive.yaml` as string literals. Editing `hooks/hook_utils.py` itself reliably tripped the warning, exactly the wallpaper-warning failure mode the v2.1.0 fix was supposed to prevent.
+
+`tool_failure_context` now uses the same path-aware `_is_contract_artifact_write` detector. This closes the last remaining substring-only check in production code.
+
+- Updated: `hook_utils.tool_failure_context` swaps substring check for `_is_contract_artifact_write(event, [])`
+- Updated: 1 test in `tests/test_hooks.py` sets explicit `tool_name: "Write"` + uses run-dir-anchored manifest path (the test was implicitly relying on the loose pre-v2.1.0 substring behavior)
+- 3 new regression-pin tests in `tests/test_hook_ack_enforcement.py`:
+  - `test_tool_failure_context_does_not_false_positive_on_edit_content` (the v2.2.0 fix)
+  - `test_tool_failure_context_still_warns_on_real_contract_write` (positive case)
+  - `test_tool_failure_context_does_not_warn_on_cat_manifest` (read-only suppression)
+
 ## [2.1.0] — 2026-05-19
 
 **Autonomy hardening.** Closes five structural gaps that v2.0.x exposed in the github-cleanup-2026-05-18 + python-311-honesty sessions. The framework's autonomy contract was systematically circumvented by orchestrator-manufactured modals, freeform stage-artifact verdicts that defeated auto-promote, and template-mismatch policy failures on multi-repo-admin project shapes. v2.1.0 makes the contract mechanical.
