@@ -27,7 +27,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|AskUserQuestion|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -40,7 +40,7 @@
     ],
     "PermissionRequest": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|AskUserQuestion|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -53,7 +53,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|AskUserQuestion|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -66,7 +66,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|AskUserQuestion|mcp__.*",
         "hooks": [
           {
             "type": "command",

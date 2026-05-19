@@ -67,6 +67,38 @@ def evaluate_scope_lock(run_id: str, run_dir: Path = RUN_DIR, root: Path = REPO_
     if not plan_path.exists():
         return [f"canonical_source not found: {canonical_source}"]
 
+    # v2.1.0 project-shape adapter: multi-repo-admin and library shapes
+    # don't use rung-versioned release plans. The canonical_source for
+    # these is SPEC.md (or another non-rung doc). When the shape is one
+    # of those, accept any non-empty rung title present anywhere in the
+    # canonical doc. If the rung name isn't even mentioned, that's
+    # still a SCOPE_CONFLICT (the scope-lock should at least reference
+    # the canonical authority by name).
+    try:
+        from policy_utils import read_project_shape
+    except ModuleNotFoundError:  # pragma: no cover - installed layout
+        from scripts.policy_utils import read_project_shape
+    shape = read_project_shape(root)
+    if shape in ("multi-repo-admin", "library"):
+        plan_text = plan_path.read_text(encoding="utf-8", errors="replace")
+        plan_normalized = normalize_text(plan_text)
+        if normalize_text(current_rung) not in plan_normalized:
+            return [
+                f"scope-lock current_rung `{current_rung}` is not mentioned anywhere in {canonical_source}; "
+                "either add a section/heading referencing it or update scope-lock to match the canonical doc."
+            ]
+        if normalize_text(proves) and normalize_text(proves) not in plan_normalized:
+            violations.append(
+                f"SCOPE_CONFLICT: scope-lock `proves` text not found in {canonical_source} "
+                f"(project_shape={shape}; full-doc match used)."
+            )
+        for module in list_value(lock, "required_modules"):
+            if normalize_text(module) not in plan_normalized:
+                violations.append(
+                    f"SCOPE_CONFLICT: required module `{module}` is not mentioned in {canonical_source}."
+                )
+        return violations
+
     plan = parse_release_plan(plan_path)
     section = plan.get(current_rung)
     if section is None:

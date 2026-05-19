@@ -174,10 +174,29 @@ Maximum 10 rows. If more exist, suffix `(... <N> older)`.
 
 - **One slash command per project session.** If a `/run` is already in flight (the most recent `.agent-runs/<run_id>/run.log` ends in `STAGE_STARTED` without a paired `STAGE_DONE`), refuse to start a new one; offer `resume` or explicit abort.
 - **Use AskUserQuestion for ALL three gates.** No chat-message-with-special-syntax gates. The v1.2.x failure mode was the LLM inventing extra prompts or chickening out at the gate; modal AskUserQuestion eliminates the interpretive surface.
+- **(v2.1.0) AskUserQuestion is permitted ONLY at the three declared gates** (manifest, plan, manager). The modal-budget hook (`hooks/hook_utils.py:modal_budget_decision`) enforces this — any AskUserQuestion fired when `current_stage` is not a declared `gate: human_approval` stage returns deny. The v1.3.0 design eliminated chat-APPROVE ceremony; the v2.0.x failure mode was the orchestrator manufacturing extra modals between gates (turning 3 clicks per run into 15+). v2.1.0 closes that loophole. See "Adopt-and-proceed" below for the corrected pattern.
 - **Never re-fire a gate after it advanced.** Once APPROVE returns, the next message advances to the next stage. Do not re-ask for confirmation.
 - **Never proceed past a failed validation by guessing.** Surface the failure with remediation pointers; let the user steer.
 - **Never write outside `.agent-runs/<run_id>/` and the project working tree** that the pipeline stages themselves modify.
 - **Auto-promote is evidence-driven, not authorization-driven.** If `auto_promote.py` says ELIGIBLE, the gate is skipped automatically. If it says NOT_ELIGIBLE, the human gate fires — no override.
+
+## Adopt-and-proceed (v2.1.0)
+
+When a stage (researcher, planner, executor, verifier, critic, etc.) returns recommendations on decisions, the default behavior is:
+
+1. **ADOPT** the recommendations the role surfaced. Roles like researcher are explicitly designed to "give a recommendation but defer the final choice to the human director." That deferral does NOT mean "the orchestrator must fire a modal for each one." It means the recommendation lives in the artifact and the director can review it post-hoc.
+2. **RECORD** the choices in `.agent-runs/<run-id>/director-decisions.md` as bound. Include the reasoning and cite the upstream artifact (e.g. "DR-A: civiccast 14-branch count — research §1; recommendation adopted").
+3. **NARRATE** in chat one line per decision so the operator sees what was adopted.
+4. **PROCEED** to the next stage without firing a modal.
+
+Modal AskUserQuestion fires ONLY when:
+- (a) the decision is outside the operator's arc authorization (e.g. forbidden-zone repo, irreversible op the operator hasn't pre-approved), OR
+- (b) the choice is genuinely two equally-strong options with no analytical basis to prefer one (rare; if the researcher had data to recommend, this isn't the case), OR
+- (c) the modal IS the framework's declared gate (manifest, plan, manager).
+
+Memory rules about "ask before deciding" (e.g. `feedback_no_unilateral_product_decisions.md` in the operator's ad-hoc memory layer) are SUSPENDED during active pipeline runs. The pipeline's gate budget is the authoritative ask-or-decide policy; broader memory rules that conflict with it apply outside pipeline runs only.
+
+The modal-budget hook enforces this mechanically: if you try to fire AskUserQuestion at a non-gate stage, the hook returns deny with a structured reason naming the legitimate gates and pointing at this section.
 
 ## Failure-message shape (all error surfaces)
 

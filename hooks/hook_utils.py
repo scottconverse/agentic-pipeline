@@ -318,6 +318,251 @@ def _is_read_only_operation(event_or_command: Any) -> bool:
     return False
 
 
+# --- v2.1.0: modal-budget enforcement -------------------------------------
+#
+# Background: v1.3.0 replaced chat-APPROVE gates with AskUserQuestion
+# modal gates, on the premise that "one modal, one click, gate advances"
+# eliminates the interpretive surface where the LLM either invented
+# extra prompts or chickened out. That worked for the framework's OWN
+# gates. It did NOT stop the orchestrator from manufacturing modal
+# AskUserQuestion prompts BETWEEN gates — turning what should be three
+# clicks (manifest, plan, manager) into 15+ clicks per run.
+#
+# v2.1.0 enforces a strict modal budget: during an active non-drafting
+# pipeline run, AskUserQuestion is permitted ONLY when the orchestrator
+# is at one of the pipeline yaml's declared `gate: human_approval`
+# stages. Anything else is the "extra prompts" failure mode v1.3.0
+# was supposed to eliminate; this hook closes the loophole.
+#
+# Drafting runs (intake mid-flight) bypass this: the intake skill
+# itself asks one question if information is missing, which is legitimate
+# pre-promotion modal use.
+
+_GATE_STAGE_NAMES_CACHE: dict[Path, frozenset[str]] = {}
+
+
+def _pipeline_yaml_for_run(run: ActiveRun) -> Path | None:
+    """Resolve the pipeline yaml the run was started against.
+
+    Convention: project root = run.run_dir.parent.parent (i.e. up from
+    `.agent-runs/<id>/` to project root). Pipeline yaml lives at
+    `.pipelines/<type>.yaml`. Type is read from the manifest if
+    available, falling back to `feature` (the default pipeline).
+    """
+    try:
+        project_root = run.run_dir.parent.parent
+        manifest_path = run.run_dir / "manifest.yaml"
+        pipeline_type = "feature"
+        if manifest_path.exists():
+            for line in manifest_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("type:"):
+                    _, _, value = stripped.partition(":")
+                    candidate = value.strip().strip("\"'")
+                    if candidate:
+                        pipeline_type = candidate
+                    break
+        yaml_path = project_root / ".pipelines" / f"{pipeline_type}.yaml"
+        if yaml_path.exists():
+            return yaml_path
+    except Exception:
+        # Hook code must never raise. If we can't find the yaml,
+        # caller treats the budget as un-enforceable (allow).
+        return None
+    return None
+
+
+def _gate_stages_from_yaml(yaml_path: Path) -> frozenset[str]:
+    """Return the set of stage names declared as `gate: human_approval`."""
+    cached = _GATE_STAGE_NAMES_CACHE.get(yaml_path)
+    if cached is not None:
+        return cached
+    gate_stages: set[str] = set()
+    try:
+        text = yaml_path.read_text(encoding="utf-8", errors="replace")
+        current_name: str | None = None
+        for raw in text.splitlines():
+            line = raw.rstrip()
+            stripped = line.strip()
+            if stripped.startswith("- name:"):
+                _, _, value = stripped.partition(":")
+                current_name = value.strip().strip("\"'") or None
+            elif stripped.startswith("gate:"):
+                _, _, value = stripped.partition(":")
+                if value.strip().strip("\"'") == "human_approval" and current_name:
+                    gate_stages.add(current_name)
+    except Exception:
+        pass
+    frozen = frozenset(gate_stages)
+    _GATE_STAGE_NAMES_CACHE[yaml_path] = frozen
+    return frozen
+
+
+# --- v2.1.0: stage-artifact format conformance ----------------------------
+#
+# auto_promote.py is a mechanical pattern-matcher. It scans stage
+# artifacts for specific marker lines and reports ELIGIBLE / NOT_ELIGIBLE
+# based on whether those markers are present. The role files (verifier,
+# critic, drift-detector) reference the markers in prose but don't
+# enforce them; agents routinely produce freeform prose verdicts without
+# the marker line, defeating auto-promote and routing the run through
+# manual manager gate even when the quality work was clean.
+#
+# This hook intercepts Write tool calls targeting the three stage
+# artifacts. If the content lacks its required marker line, deny the
+# write with a message naming the missing pattern. Agent re-edits with
+# the marker; the marker fires auto-promote correctly downstream.
+
+import re as _re_for_artifact_format
+
+_ARTIFACT_FORMAT_REQUIREMENTS: dict[str, tuple[str, str]] = {
+    "verifier-report.md": (
+        r"\*\*Criteria:\s*\d+\s+total,\s*\d+\s+MET,\s*\d+\s+PARTIAL,\s*\d+\s+NOT\s+MET,\s*\d+\s+NOT\s+APPLICABLE\*\*",
+        "**Criteria: <T> total, <M> MET, <P> PARTIAL, <N> NOT MET, <A> NOT APPLICABLE**",
+    ),
+    "critic-report.md": (
+        r"\*\*Findings:\s*\d+\s+total,\s*\d+\s+blocker,\s*\d+\s+critical,\s*\d+\s+major,\s*\d+\s+minor\*\*",
+        "**Findings: <T> total, <B> blocker, <C> critical, <M> major, <N> minor**",
+    ),
+    "drift-report.md": (
+        r"\*\*Drift:\s*\d+\s+total,\s*\d+\s+blocker\*\*",
+        "**Drift: <T> total, <B> blocker**",
+    ),
+}
+
+
+def stage_artifact_format_decision(
+    event: dict[str, Any], runs: list[ActiveRun]
+) -> dict[str, Any] | None:
+    """Deny Write calls saving stage reports without the auto-promote marker.
+
+    Triggers ONLY for the three stage-report filenames inside an active
+    non-drafting run. Reads the inbound content from tool_input.content,
+    scans for the required marker pattern, denies if absent.
+    """
+    tool_name = event.get("tool_name") or ""
+    if tool_name != "Write":
+        return None
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    file_path = tool_input.get("file_path") or ""
+    content = tool_input.get("content") or ""
+    if not isinstance(file_path, str) or not isinstance(content, str):
+        return None
+    # Only fire under an active non-drafting run.
+    non_drafting = [r for r in runs if not r.is_drafting]
+    if not non_drafting:
+        return None
+    # Match the filename against our artifact list.
+    name = Path(file_path).name
+    if name not in _ARTIFACT_FORMAT_REQUIREMENTS:
+        return None
+    # Confirm this write is INSIDE an .agent-runs/<id>/ dir of an
+    # active run (don't fire on test fixtures / docs that happen to
+    # share the filename).
+    in_run_dir = False
+    try:
+        resolved = Path(file_path).resolve()
+        for r in non_drafting:
+            try:
+                resolved.relative_to(r.run_dir.resolve())
+                in_run_dir = True
+                break
+            except ValueError:
+                continue
+    except Exception:
+        return None
+    if not in_run_dir:
+        return None
+    pattern_re, example = _ARTIFACT_FORMAT_REQUIREMENTS[name]
+    if _re_for_artifact_format.search(pattern_re, content):
+        return None  # marker present; allow
+    reason = (
+        "STAGE_ARTIFACT_FORMAT_VIOLATION: "
+        + name
+        + " is missing the required auto-promote marker line. "
+        + "Expected a line matching the pattern: " + example + ". "
+        + "Without this marker, scripts/policy/auto_promote.py cannot "
+        + "parse the artifact and the run will route through the manual "
+        + "manager gate instead of evidence-driven auto-promote. Add the "
+        + "marker line with accurate counts (one per category) and retry "
+        + "the write."
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
+def modal_budget_decision(
+    event: dict[str, Any], runs: list[ActiveRun]
+) -> dict[str, Any] | None:
+    """Return a deny payload if the AskUserQuestion call violates the budget.
+
+    Permits the modal when:
+      - no active non-drafting run exists (operator ad-hoc use is fine)
+      - run is mid-intake (drafting bridge state)
+      - current_stage matches a declared `gate: human_approval` stage in
+        the pipeline yaml
+      - the pipeline yaml can't be resolved (fail open, never on uncertainty)
+
+    Denies otherwise with a structured reason naming the budget rule and
+    pointing at the adopt-and-proceed alternative.
+    """
+    tool_name = event.get("tool_name") or ""
+    if tool_name != "AskUserQuestion":
+        return None
+    # No active run, or all runs are drafting: bypass budget.
+    non_drafting = [r for r in runs if not r.is_drafting]
+    if not non_drafting:
+        return None
+    # Use the first active run as the budget authority (matches the
+    # rest of the codebase's "primary run" convention).
+    run = non_drafting[0]
+    yaml_path = _pipeline_yaml_for_run(run)
+    if yaml_path is None:
+        return None  # fail open when we can't resolve the pipeline
+    gate_stages = _gate_stages_from_yaml(yaml_path)
+    if not gate_stages:
+        return None  # pipeline declares no human gates, nothing to enforce
+    current_stage = (run.fields.get("current_stage") or "").strip()
+    # Accept current_stage matches OR last_completed_gate matches OR
+    # current_stage is a "_done"/"_drafted" suffix of a gate stage,
+    # which is the orchestrator's bookkeeping convention when a gate
+    # has just fired and the run state hasn't advanced yet.
+    if current_stage in gate_stages:
+        return None
+    last_completed = (run.fields.get("last_completed_gate") or "").strip()
+    if last_completed and last_completed in gate_stages and current_stage in {"", "(unknown)"}:
+        return None
+    sorted_gates = sorted(gate_stages)
+    reason = (
+        "MODAL_BUDGET_EXCEEDED: this run's pipeline declares modal gates "
+        f"only at stages {sorted_gates}; current_stage='{current_stage}' is "
+        "not one of them. v2.1.0 hook enforces the v1.3.0 design that "
+        "extra inter-gate modals are the failure mode AskUserQuestion gates "
+        "were designed to eliminate. Re-evaluate: (a) if you have a "
+        "researcher recommendation, ADOPT it, record in "
+        "director-decisions.md, narrate in chat, proceed; (b) if the "
+        "decision is genuinely outside scope (forbidden zone, irreversible "
+        "without prior authorization), use BLOCK or REPLAN at the next "
+        "mandated gate instead of inserting a modal here; (c) if this "
+        "modal IS the mandated gate, update active-control-state.md "
+        "current_stage to the gate-stage name before firing."
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
 def classify_tool_risk(event: dict[str, Any], runs: list[ActiveRun]) -> tuple[str, list[str]]:
     command = tool_command(event)
     haystack = command.lower()
@@ -340,18 +585,135 @@ def classify_tool_risk(event: dict[str, Any], runs: list[ActiveRun]) -> tuple[st
     if runs and _touches_outside_allowed_paths(event, runs[0].run_dir):
         severity = "deny"
         reasons.append("write target appears outside manifest allowed_paths during an active run")
-    # Audit Pass 10 / Cluster I: only warn on contract-artifact touches
-    # for WRITE-class operations. Reads (cat, grep, Read tool) are the
-    # safe, encouraged behavior and shouldn't get the same warning as
-    # someone editing the manifest mid-run.
-    if (
-        ("directive.yaml" in haystack or "manifest.yaml" in haystack or "scope-lock.yaml" in haystack)
-        and not _is_read_only_operation(event)
-    ):
-        if severity != "deny":
+    # v2.1.0: path-aware contract-artifact detection. The v2.0.x version
+    # did a substring search on the lowercased command/content, which
+    # produced false positives when the AGENT's own source/test code
+    # mentioned "manifest.yaml" / "scope-lock.yaml" / "directive.yaml"
+    # by NAME (e.g. writing test fixtures, documenting hooks, building
+    # the policy scripts themselves). This refinement checks the actual
+    # write TARGET path -- the only place "contract artifact touched"
+    # genuinely indicates a contract mutation.
+    contract_touched, contract_path = _is_contract_artifact_write(event, runs)
+    if contract_touched:
+        # Post-pin manifest mutations are DENY (not warn): the preflight
+        # SHA pin marks the manifest as immutable for the rest of the
+        # run. Editing it after the pin breaks the integrity contract
+        # and forces auto-promote into the manual gate path.
+        if (
+            contract_path
+            and contract_path.name == "manifest.yaml"
+            and runs
+            and (contract_path.parent / "manifest.sha").exists()
+        ):
+            severity = "deny"
+            reasons.append(
+                "post-pin manifest mutation: the run's manifest.sha pin file exists, "
+                "marking this manifest as immutable. Any further edit breaks the "
+                "integrity contract. If the manifest is genuinely wrong, BLOCK the "
+                "current run and intake a corrected one."
+            )
+        elif severity != "deny":
             severity = "warn"
-        reasons.append("pipeline contract artifact touched")
+            reasons.append("pipeline contract artifact touched")
+        else:
+            reasons.append("pipeline contract artifact touched")
     return severity, reasons
+
+
+_CONTRACT_ARTIFACT_NAMES = frozenset(
+    {"manifest.yaml", "scope-lock.yaml", "directive.yaml", "active-control-state.md"}
+)
+
+
+def _is_contract_artifact_write(
+    event: dict[str, Any], runs: list[ActiveRun]
+) -> tuple[bool, Path | None]:
+    """Return (True, target_path) iff the tool call writes to a contract artifact.
+
+    Distinguishes write-class tools (Write, Edit, MultiEdit, NotebookEdit)
+    where the target file_path is structured and unambiguous, from Bash
+    commands where any string can appear. For Bash, we only flag commands
+    that perform a write redirect or in-place edit referencing a contract
+    artifact file in a path that resolves under an active run dir.
+
+    Returns (False, None) for read-only tool calls, for write-class tools
+    whose target isn't a contract artifact name, and for the agent's own
+    source code / test fixtures that happen to mention contract artifact
+    NAMES inside Bash command content or Write content (the v2.0.x false-
+    positive class).
+    """
+    if not isinstance(event, dict):
+        return (False, None)
+    tool_name = event.get("tool_name") or ""
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return (False, None)
+    # Read-only tools never touch contract artifacts in a write sense.
+    if tool_name in _READ_ONLY_TOOL_NAMES:
+        return (False, None)
+    # Write-class tools: file_path is structured.
+    if tool_name in {"Write", "Edit", "MultiEdit", "NotebookEdit"}:
+        file_path = tool_input.get("file_path") or ""
+        if not isinstance(file_path, str) or not file_path:
+            return (False, None)
+        try:
+            resolved = Path(file_path).resolve()
+        except Exception:
+            return (False, None)
+        if resolved.name not in _CONTRACT_ARTIFACT_NAMES:
+            return (False, None)
+        # Active-run match: best signal, gives us run_dir + the resolved
+        # path for the post-pin deny check.
+        for r in runs:
+            try:
+                resolved.relative_to(r.run_dir.resolve())
+                return (True, resolved)
+            except ValueError:
+                continue
+        # No active run match. Still flag if the path string indicates a
+        # run dir (.agent-runs/<id>/manifest.yaml etc.) -- the agent is
+        # touching a contract artifact even if our active-run discovery
+        # didn't pick it up. Don't flag .pipelines/manifest-template.yaml
+        # or similar non-run paths -- those are legitimate edits to
+        # scaffolding/templates, not to a specific run's contract.
+        normalized = file_path.replace("\\", "/")
+        if "/.agent-runs/" in normalized or normalized.startswith(".agent-runs/"):
+            return (True, resolved)
+        return (False, None)
+    # Bash: flag only when the command does a redirect or in-place edit
+    # AGAINST a contract artifact path that lives in an active run dir.
+    if tool_name == "Bash":
+        if _is_read_only_operation(event):
+            return (False, None)
+        command = tool_command(event)
+        haystack = command.lower()
+        bash_contract = False
+        for name in _CONTRACT_ARTIFACT_NAMES:
+            if name in haystack:
+                # Only count if the command does a write (redirect or
+                # sed -i / tee / cp into). Reads/greps of these files
+                # are legitimate.
+                if (
+                    " > " in command
+                    or " >> " in command
+                    or " >>" in command
+                    or " >" in command
+                    or "sed -i" in command
+                    or "tee " in command
+                    or "cp " in command
+                    or "mv " in command
+                ):
+                    bash_contract = True
+                    break
+        if bash_contract:
+            # Best-effort: figure out which file inside a run dir was
+            # the target (for the post-pin manifest check downstream).
+            # Resolution is approximate from a Bash command; the deny
+            # check downstream tolerates a None path (only the warn
+            # message fires, not the post-pin deny).
+            return (True, None)
+        return (False, None)
+    return (False, None)
 
 
 def permission_decision(event: dict[str, Any], runs: list[ActiveRun]) -> dict[str, Any] | None:

@@ -2,7 +2,7 @@
 
 Ship multi-step Claude Code work that doesn't drift. The plugin reads your project's spec, drafts a per-run scope contract, and asks you to APPROVE via a modal gate. Then it runs research → plan → execute → verify → critique end-to-end with three human gates, an opt-in real-time judge, machine-checkable auto-promote, **eleven lifecycle hooks** that enforce the pipeline at runtime, **directive-contract pre-approval** for conformant runs, **persistent file-backed memory** that survives context compaction, and an **MCP Mem0 layer** for cross-session continuity.
 
-**Version:** 2.0.0
+**Version:** 2.1.0
 **License:** Apache 2.0
 
 ---
@@ -409,7 +409,7 @@ To upgrade:
 ```
 cd ~/.claude/plugins/marketplaces/agent-pipeline-claude
 git pull
-git checkout v2.0.0
+git checkout v2.1.0
 ```
 
 Then fully quit and reopen Cowork.

@@ -30,6 +30,8 @@ try:
         append_hook_event,
         classify_tool_risk,
         discover_active_runs,
+        modal_budget_decision,
+        stage_artifact_format_decision,
         permission_decision,
         prompt_bypass_context,
         read_hook_input,
@@ -48,6 +50,8 @@ except ModuleNotFoundError:  # pragma: no cover - package import from tests
         append_hook_event,
         classify_tool_risk,
         discover_active_runs,
+        modal_budget_decision,
+        stage_artifact_format_decision,
         permission_decision,
         prompt_bypass_context,
         read_hook_input,
@@ -105,7 +109,38 @@ def handle_user_prompt_submit(event: dict) -> int:
 
 def handle_pre_tool_use(event: dict) -> int:
     root = repo_root_from_event(event)
-    severity, reasons = classify_tool_risk(event, discover_active_runs(root))
+    runs = discover_active_runs(root)
+    # v2.1.0 modal-budget enforcement — check BEFORE classify_tool_risk
+    # because the AskUserQuestion path is a structural concern (where in
+    # the pipeline are we?) not a content-risk concern (what command?).
+    modal_decision = modal_budget_decision(event, runs)
+    if modal_decision is not None:
+        reason = modal_decision.get("hookSpecificOutput", {}).get(
+            "permissionDecisionReason", "modal budget exceeded"
+        )
+        append_hook_event(root, "PreToolUse", "modal-budget deny: " + reason[:200])
+        record_hook_memory(
+            root, "PreToolUse", reason[:400], {"severity": "deny", "rule": "modal_budget"}
+        )
+        return write_json(modal_decision)
+    # v2.1.0 stage-artifact format conformance — check BEFORE the generic
+    # risk classifier so we get a focused error message about the
+    # specific marker requirement, not a generic "contract artifact
+    # touched" warning.
+    artifact_decision = stage_artifact_format_decision(event, runs)
+    if artifact_decision is not None:
+        reason = artifact_decision.get("hookSpecificOutput", {}).get(
+            "permissionDecisionReason", "stage artifact format violation"
+        )
+        append_hook_event(root, "PreToolUse", "stage-artifact-format deny: " + reason[:200])
+        record_hook_memory(
+            root,
+            "PreToolUse",
+            reason[:400],
+            {"severity": "deny", "rule": "stage_artifact_format"},
+        )
+        return write_json(artifact_decision)
+    severity, reasons = classify_tool_risk(event, runs)
     if severity == "deny":
         reason = "Agent Pipeline hook denied tool call: " + "; ".join(reasons)
         append_hook_event(root, "PreToolUse", reason)
