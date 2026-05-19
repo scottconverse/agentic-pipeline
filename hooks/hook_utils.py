@@ -398,6 +398,106 @@ def _gate_stages_from_yaml(yaml_path: Path) -> frozenset[str]:
     return frozen
 
 
+# --- v2.1.0: stage-artifact format conformance ----------------------------
+#
+# auto_promote.py is a mechanical pattern-matcher. It scans stage
+# artifacts for specific marker lines and reports ELIGIBLE / NOT_ELIGIBLE
+# based on whether those markers are present. The role files (verifier,
+# critic, drift-detector) reference the markers in prose but don't
+# enforce them; agents routinely produce freeform prose verdicts without
+# the marker line, defeating auto-promote and routing the run through
+# manual manager gate even when the quality work was clean.
+#
+# This hook intercepts Write tool calls targeting the three stage
+# artifacts. If the content lacks its required marker line, deny the
+# write with a message naming the missing pattern. Agent re-edits with
+# the marker; the marker fires auto-promote correctly downstream.
+
+import re as _re_for_artifact_format
+
+_ARTIFACT_FORMAT_REQUIREMENTS: dict[str, tuple[str, str]] = {
+    "verifier-report.md": (
+        r"\*\*Criteria:\s*\d+\s+total,\s*\d+\s+MET,\s*\d+\s+PARTIAL,\s*\d+\s+NOT\s+MET,\s*\d+\s+NOT\s+APPLICABLE\*\*",
+        "**Criteria: <T> total, <M> MET, <P> PARTIAL, <N> NOT MET, <A> NOT APPLICABLE**",
+    ),
+    "critic-report.md": (
+        r"\*\*Findings:\s*\d+\s+total,\s*\d+\s+blocker,\s*\d+\s+critical,\s*\d+\s+major,\s*\d+\s+minor\*\*",
+        "**Findings: <T> total, <B> blocker, <C> critical, <M> major, <N> minor**",
+    ),
+    "drift-report.md": (
+        r"\*\*Drift:\s*\d+\s+total,\s*\d+\s+blocker\*\*",
+        "**Drift: <T> total, <B> blocker**",
+    ),
+}
+
+
+def stage_artifact_format_decision(
+    event: dict[str, Any], runs: list[ActiveRun]
+) -> dict[str, Any] | None:
+    """Deny Write calls saving stage reports without the auto-promote marker.
+
+    Triggers ONLY for the three stage-report filenames inside an active
+    non-drafting run. Reads the inbound content from tool_input.content,
+    scans for the required marker pattern, denies if absent.
+    """
+    tool_name = event.get("tool_name") or ""
+    if tool_name != "Write":
+        return None
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    file_path = tool_input.get("file_path") or ""
+    content = tool_input.get("content") or ""
+    if not isinstance(file_path, str) or not isinstance(content, str):
+        return None
+    # Only fire under an active non-drafting run.
+    non_drafting = [r for r in runs if not r.is_drafting]
+    if not non_drafting:
+        return None
+    # Match the filename against our artifact list.
+    name = Path(file_path).name
+    if name not in _ARTIFACT_FORMAT_REQUIREMENTS:
+        return None
+    # Confirm this write is INSIDE an .agent-runs/<id>/ dir of an
+    # active run (don't fire on test fixtures / docs that happen to
+    # share the filename).
+    in_run_dir = False
+    try:
+        resolved = Path(file_path).resolve()
+        for r in non_drafting:
+            try:
+                resolved.relative_to(r.run_dir.resolve())
+                in_run_dir = True
+                break
+            except ValueError:
+                continue
+    except Exception:
+        return None
+    if not in_run_dir:
+        return None
+    pattern_re, example = _ARTIFACT_FORMAT_REQUIREMENTS[name]
+    if _re_for_artifact_format.search(pattern_re, content):
+        return None  # marker present; allow
+    reason = (
+        "STAGE_ARTIFACT_FORMAT_VIOLATION: "
+        + name
+        + " is missing the required auto-promote marker line. "
+        + "Expected a line matching the pattern: " + example + ". "
+        + "Without this marker, scripts/policy/auto_promote.py cannot "
+        + "parse the artifact and the run will route through the manual "
+        + "manager gate instead of evidence-driven auto-promote. Add the "
+        + "marker line with accurate counts (one per category) and retry "
+        + "the write."
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
 def modal_budget_decision(
     event: dict[str, Any], runs: list[ActiveRun]
 ) -> dict[str, Any] | None:

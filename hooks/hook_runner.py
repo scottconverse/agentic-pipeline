@@ -31,6 +31,7 @@ try:
         classify_tool_risk,
         discover_active_runs,
         modal_budget_decision,
+        stage_artifact_format_decision,
         permission_decision,
         prompt_bypass_context,
         read_hook_input,
@@ -50,6 +51,7 @@ except ModuleNotFoundError:  # pragma: no cover - package import from tests
         classify_tool_risk,
         discover_active_runs,
         modal_budget_decision,
+        stage_artifact_format_decision,
         permission_decision,
         prompt_bypass_context,
         read_hook_input,
@@ -121,6 +123,23 @@ def handle_pre_tool_use(event: dict) -> int:
             root, "PreToolUse", reason[:400], {"severity": "deny", "rule": "modal_budget"}
         )
         return write_json(modal_decision)
+    # v2.1.0 stage-artifact format conformance — check BEFORE the generic
+    # risk classifier so we get a focused error message about the
+    # specific marker requirement, not a generic "contract artifact
+    # touched" warning.
+    artifact_decision = stage_artifact_format_decision(event, runs)
+    if artifact_decision is not None:
+        reason = artifact_decision.get("hookSpecificOutput", {}).get(
+            "permissionDecisionReason", "stage artifact format violation"
+        )
+        append_hook_event(root, "PreToolUse", "stage-artifact-format deny: " + reason[:200])
+        record_hook_memory(
+            root,
+            "PreToolUse",
+            reason[:400],
+            {"severity": "deny", "rule": "stage_artifact_format"},
+        )
+        return write_json(artifact_decision)
     severity, reasons = classify_tool_risk(event, runs)
     if severity == "deny":
         reason = "Agent Pipeline hook denied tool call: " + "; ".join(reasons)
