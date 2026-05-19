@@ -318,6 +318,151 @@ def _is_read_only_operation(event_or_command: Any) -> bool:
     return False
 
 
+# --- v2.1.0: modal-budget enforcement -------------------------------------
+#
+# Background: v1.3.0 replaced chat-APPROVE gates with AskUserQuestion
+# modal gates, on the premise that "one modal, one click, gate advances"
+# eliminates the interpretive surface where the LLM either invented
+# extra prompts or chickened out. That worked for the framework's OWN
+# gates. It did NOT stop the orchestrator from manufacturing modal
+# AskUserQuestion prompts BETWEEN gates — turning what should be three
+# clicks (manifest, plan, manager) into 15+ clicks per run.
+#
+# v2.1.0 enforces a strict modal budget: during an active non-drafting
+# pipeline run, AskUserQuestion is permitted ONLY when the orchestrator
+# is at one of the pipeline yaml's declared `gate: human_approval`
+# stages. Anything else is the "extra prompts" failure mode v1.3.0
+# was supposed to eliminate; this hook closes the loophole.
+#
+# Drafting runs (intake mid-flight) bypass this: the intake skill
+# itself asks one question if information is missing, which is legitimate
+# pre-promotion modal use.
+
+_GATE_STAGE_NAMES_CACHE: dict[Path, frozenset[str]] = {}
+
+
+def _pipeline_yaml_for_run(run: ActiveRun) -> Path | None:
+    """Resolve the pipeline yaml the run was started against.
+
+    Convention: project root = run.run_dir.parent.parent (i.e. up from
+    `.agent-runs/<id>/` to project root). Pipeline yaml lives at
+    `.pipelines/<type>.yaml`. Type is read from the manifest if
+    available, falling back to `feature` (the default pipeline).
+    """
+    try:
+        project_root = run.run_dir.parent.parent
+        manifest_path = run.run_dir / "manifest.yaml"
+        pipeline_type = "feature"
+        if manifest_path.exists():
+            for line in manifest_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("type:"):
+                    _, _, value = stripped.partition(":")
+                    candidate = value.strip().strip("\"'")
+                    if candidate:
+                        pipeline_type = candidate
+                    break
+        yaml_path = project_root / ".pipelines" / f"{pipeline_type}.yaml"
+        if yaml_path.exists():
+            return yaml_path
+    except Exception:
+        # Hook code must never raise. If we can't find the yaml,
+        # caller treats the budget as un-enforceable (allow).
+        return None
+    return None
+
+
+def _gate_stages_from_yaml(yaml_path: Path) -> frozenset[str]:
+    """Return the set of stage names declared as `gate: human_approval`."""
+    cached = _GATE_STAGE_NAMES_CACHE.get(yaml_path)
+    if cached is not None:
+        return cached
+    gate_stages: set[str] = set()
+    try:
+        text = yaml_path.read_text(encoding="utf-8", errors="replace")
+        current_name: str | None = None
+        for raw in text.splitlines():
+            line = raw.rstrip()
+            stripped = line.strip()
+            if stripped.startswith("- name:"):
+                _, _, value = stripped.partition(":")
+                current_name = value.strip().strip("\"'") or None
+            elif stripped.startswith("gate:"):
+                _, _, value = stripped.partition(":")
+                if value.strip().strip("\"'") == "human_approval" and current_name:
+                    gate_stages.add(current_name)
+    except Exception:
+        pass
+    frozen = frozenset(gate_stages)
+    _GATE_STAGE_NAMES_CACHE[yaml_path] = frozen
+    return frozen
+
+
+def modal_budget_decision(
+    event: dict[str, Any], runs: list[ActiveRun]
+) -> dict[str, Any] | None:
+    """Return a deny payload if the AskUserQuestion call violates the budget.
+
+    Permits the modal when:
+      - no active non-drafting run exists (operator ad-hoc use is fine)
+      - run is mid-intake (drafting bridge state)
+      - current_stage matches a declared `gate: human_approval` stage in
+        the pipeline yaml
+      - the pipeline yaml can't be resolved (fail open, never on uncertainty)
+
+    Denies otherwise with a structured reason naming the budget rule and
+    pointing at the adopt-and-proceed alternative.
+    """
+    tool_name = event.get("tool_name") or ""
+    if tool_name != "AskUserQuestion":
+        return None
+    # No active run, or all runs are drafting: bypass budget.
+    non_drafting = [r for r in runs if not r.is_drafting]
+    if not non_drafting:
+        return None
+    # Use the first active run as the budget authority (matches the
+    # rest of the codebase's "primary run" convention).
+    run = non_drafting[0]
+    yaml_path = _pipeline_yaml_for_run(run)
+    if yaml_path is None:
+        return None  # fail open when we can't resolve the pipeline
+    gate_stages = _gate_stages_from_yaml(yaml_path)
+    if not gate_stages:
+        return None  # pipeline declares no human gates, nothing to enforce
+    current_stage = (run.fields.get("current_stage") or "").strip()
+    # Accept current_stage matches OR last_completed_gate matches OR
+    # current_stage is a "_done"/"_drafted" suffix of a gate stage,
+    # which is the orchestrator's bookkeeping convention when a gate
+    # has just fired and the run state hasn't advanced yet.
+    if current_stage in gate_stages:
+        return None
+    last_completed = (run.fields.get("last_completed_gate") or "").strip()
+    if last_completed and last_completed in gate_stages and current_stage in {"", "(unknown)"}:
+        return None
+    sorted_gates = sorted(gate_stages)
+    reason = (
+        "MODAL_BUDGET_EXCEEDED: this run's pipeline declares modal gates "
+        f"only at stages {sorted_gates}; current_stage='{current_stage}' is "
+        "not one of them. v2.1.0 hook enforces the v1.3.0 design that "
+        "extra inter-gate modals are the failure mode AskUserQuestion gates "
+        "were designed to eliminate. Re-evaluate: (a) if you have a "
+        "researcher recommendation, ADOPT it, record in "
+        "director-decisions.md, narrate in chat, proceed; (b) if the "
+        "decision is genuinely outside scope (forbidden zone, irreversible "
+        "without prior authorization), use BLOCK or REPLAN at the next "
+        "mandated gate instead of inserting a modal here; (c) if this "
+        "modal IS the mandated gate, update active-control-state.md "
+        "current_stage to the gate-stage name before firing."
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
 def classify_tool_risk(event: dict[str, Any], runs: list[ActiveRun]) -> tuple[str, list[str]]:
     command = tool_command(event)
     haystack = command.lower()

@@ -30,6 +30,7 @@ try:
         append_hook_event,
         classify_tool_risk,
         discover_active_runs,
+        modal_budget_decision,
         permission_decision,
         prompt_bypass_context,
         read_hook_input,
@@ -48,6 +49,7 @@ except ModuleNotFoundError:  # pragma: no cover - package import from tests
         append_hook_event,
         classify_tool_risk,
         discover_active_runs,
+        modal_budget_decision,
         permission_decision,
         prompt_bypass_context,
         read_hook_input,
@@ -105,7 +107,21 @@ def handle_user_prompt_submit(event: dict) -> int:
 
 def handle_pre_tool_use(event: dict) -> int:
     root = repo_root_from_event(event)
-    severity, reasons = classify_tool_risk(event, discover_active_runs(root))
+    runs = discover_active_runs(root)
+    # v2.1.0 modal-budget enforcement — check BEFORE classify_tool_risk
+    # because the AskUserQuestion path is a structural concern (where in
+    # the pipeline are we?) not a content-risk concern (what command?).
+    modal_decision = modal_budget_decision(event, runs)
+    if modal_decision is not None:
+        reason = modal_decision.get("hookSpecificOutput", {}).get(
+            "permissionDecisionReason", "modal budget exceeded"
+        )
+        append_hook_event(root, "PreToolUse", "modal-budget deny: " + reason[:200])
+        record_hook_memory(
+            root, "PreToolUse", reason[:400], {"severity": "deny", "rule": "modal_budget"}
+        )
+        return write_json(modal_decision)
+    severity, reasons = classify_tool_risk(event, runs)
     if severity == "deny":
         reason = "Agent Pipeline hook denied tool call: " + "; ".join(reasons)
         append_hook_event(root, "PreToolUse", reason)
