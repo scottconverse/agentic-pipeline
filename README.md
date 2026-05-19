@@ -2,6 +2,8 @@
 
 **Ship multi-step Claude Code work that doesn't drift.**
 
+**Status & limits:** see [docs/STATUS_AND_LIMITS.md](docs/STATUS_AND_LIMITS.md) — the honest map of what works, what's experimental, and what's known broken. Treat that file as the source of truth over README and CHANGELOG.
+
 The plugin reads your project's spec, drafts a per-run scope contract from it, and asks you to APPROVE in a one-click `AskUserQuestion` modal. Then it runs research → plan → execute → verify → critique end-to-end with three modal human gates, an opt-in real-time judge, and machine-checkable auto-promote.
 
 One namespaced skill. No YAML for you to hand-author.
