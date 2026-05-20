@@ -2,23 +2,21 @@
 
 **Ship multi-step Claude Code work that doesn't drift.**
 
-The plugin reads your project's spec, drafts a per-run scope contract from it, and asks you to APPROVE in a one-click `AskUserQuestion` modal. Then it runs research → plan → execute → verify → critique end-to-end with three modal human gates, an opt-in real-time judge, and machine-checkable auto-promote.
+The plugin reads your project's spec, drafts a per-run scope contract from it, and shows it to you in chat with a fast keyword gate: reply `APPROVE` to start, `REVISE` to send back, `VIEW` to print the full YAML. Then it runs research → plan → execute → verify → critique end-to-end with three chat-based human gates (deterministic first-token keyword parsing), an opt-in real-time judge, and machine-checkable auto-promote. Modal `AskUserQuestion` infrastructure is denied during active runs — the chat keeps full context visible at gate-decision time.
 
 One namespaced skill. No YAML for you to hand-author.
 
-**Current release: v2.1.0** — autonomy hardening. Closes five v2.0.x structural gaps: modal-budget hook prevents orchestrator-manufactured modals between gates, stage-artifact format hook unblocks auto-promote, project-shape adapter unblocks multi-repo-admin runs, path-aware contract-artifact detection eliminates the wallpaper-warning false positives, post-pin manifest mutations are now DENY. [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
+**Current release: v2.2.1** — chat-gate restoration + cache hygiene. Reverses the v1.3.0 → v2.1.0 modal-gate experiment after the operator UX failure (Cowork's modal overlay hid the chat context the operator needed at gate-decision time). Gates are now chat-based with deterministic first-token keyword parsing (`APPROVE` / `REVISE` / `REPLAN` / `BLOCK` / `VIEW`, case-insensitive). The modal-budget hook denies every `AskUserQuestion` during active non-drafting runs. Plus: auto-deletes stale plugin cache directories on session start (1.5-2 MB per old version × multiple installs adds up). [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
 
-## What's new in v2.1.0
+## What's new in v2.2.1
 
-v2.1 closes five autonomy gaps that v2.0.x exposed in real multi-run sessions. The framework's autonomy contract was being systematically circumvented by orchestrator-manufactured modals, freeform stage-artifact verdicts that defeated auto-promote, and template-mismatch policy failures on multi-repo-admin shapes. v2.1.0 makes the contract mechanical:
+v2.2.1 reverses the v1.3.0 → v2.1.0 modal-gate experiment after the operator UX failure: Cowork's modal overlay hides the chat context the operator needs at gate-decision time, defeating the gate's purpose. Gates are now chat-based with deterministic first-token keyword parsing.
 
-- **Modal-budget hook** blocks `AskUserQuestion` outside declared `gate: human_approval` stages. The v1.3.0 design eliminated chat-APPROVE ceremony; the v2.0.x failure mode was modals between gates (turning 3 clicks per run into 15+). The hook closes that loophole.
-- **Stage-artifact format hook** denies `Write` calls saving verifier/critic/drift reports without the required `**Criteria: ...**` / `**Findings: ...**` / `**Drift: ...**` marker lines. `auto_promote.py` is a marker-line scanner; freeform prose verdicts now fail at write time instead of failing auto-promote downstream.
-- **Project-shape adapter** lets policy scripts branch on `project_shape:` (single-codebase / multi-repo-admin / library). Multi-repo-admin runs no longer crash `check_allowed_paths` on non-git roots or fail `check_scope_lock` on non-numeric rung names.
-- **Path-aware contract-artifact detection** eliminates the v2.0.x false-positive class where framework edits, test files, and docs that mentioned `manifest.yaml` / `scope-lock.yaml` by string triggered constant "contract artifact touched" warnings.
-- **Post-pin manifest writes are DENY** (was warn). After preflight pins the SHA, any further write to the manifest is rejected at hook time instead of caught at the policy stage.
+- **Chat-based gates with keyword grammar.** Each of the three gates (manifest, plan, manager) prints a structured prompt with `APPROVE` / `REVISE` / `REPLAN` / `BLOCK` / `VIEW` as the recognized keywords (case-insensitive). The orchestrator parses the first non-whitespace token of your next message. Anything unrecognized re-prints the prompt with a no-parse note. The interpretive-surface concern the modal redesign was supposed to fix is now structurally addressed by (a) the modal-budget hook denying ALL `AskUserQuestion` during active non-drafting pipeline runs, (b) the explicit keyword grammar in each gate prompt, (c) the no-parse branch that re-prints instead of guessing.
+- **Modal-budget hook tightened to deny-all.** v2.1.0 allowed `AskUserQuestion` AT the three declared gates and denied it everywhere else. v2.2.1 removes the gate-stage exception: every `AskUserQuestion` during an active non-drafting pipeline run is denied with `MODAL_BUDGET_EXCEEDED`. Gates are chat; non-gate decisions follow adopt-and-proceed.
+- **Auto-delete stale plugin cache directories on SessionStart.** Each plugin upgrade left the prior version's cache (1.5-2 MB) on disk under `~/.claude/plugins/cache/agent-pipeline-claude/agent-pipeline-claude/`. Multiple stale siblings made it confusing during debugging which version was live. v2.2.1's `cleanup_stale_plugin_caches` deletes every sibling of the loaded version whose name parses as a strictly-lower semver. Fires once per session, idempotent.
 
-Plus `skills/run/references/run.md` codifies the adopt-and-proceed pattern: when a stage returns recommendations, the orchestrator adopts them, records in `director-decisions.md`, narrates one line, and proceeds — modal only at the three declared gates. Operator-layer memory rules about "ask before deciding" are suspended during pipeline runs.
+Plus `skills/run/references/run.md` codifies the adopt-and-proceed pattern: when a stage returns recommendations, the orchestrator adopts them, records in `director-decisions.md`, narrates one line, and proceeds — no modal, no extra chat prompt. Operator-layer memory rules about "ask before deciding" are suspended during pipeline runs.
 
 ## What's new in v2.0.0
 
@@ -72,10 +70,16 @@ pipeline_run:
   ...
 ```
 
-Use the APPROVE / Adjust modal that appears next, or describe what to change.
+=== Manifest gate ===
+Manifest drafted at .agent-runs/<run_id>/manifest.yaml.
+
+Reply with one word (case-insensitive):
+  APPROVE  — start the run; spawn the researcher next
+  REVISE   — stop; you'll describe what to change in the next message
+  VIEW     — print the complete manifest.yaml to chat, then re-ask
 ```
 
-You read the orientation summary in chat, then click APPROVE in the modal that fires immediately after. The pipeline runs. Three human gates along the way (manifest, plan, manager-decision), each a one-click `AskUserQuestion` modal. The last one auto-fires when the six machine-checkable conditions pass. Final result lands in `.agent-runs/<run-id>/` as a structured paper trail.
+You read the orientation summary and the gate prompt in chat, then reply `APPROVE` (or `REVISE` with a description of what to change, or `VIEW` to see the full manifest first). The pipeline runs. Three human gates along the way (manifest, plan, manager-decision), each a chat prompt with the keyword grammar above. The last one auto-fires when the six machine-checkable conditions pass — no chat prompt at all. Final result lands in `.agent-runs/<run-id>/` as a structured paper trail.
 
 That's it. No two-step new-run + run-pipeline. No blank YAML to fill in.
 
@@ -99,7 +103,7 @@ Agentic work fails in predictable ways:
 
 The plugin enforces a structural pattern that catches every one of those:
 
-1. **Drafted scope contract.** The manifest is drafted from your project's existing docs and presented for one-click APPROVE. You review what the agent thinks the run is; you don't author it from blank.
+1. **Drafted scope contract.** The manifest is drafted from your project's existing docs and presented for chat APPROVE. You review what the agent thinks the run is; you don't author it from blank.
 2. **Plan gate.** The planner produces a plan; you approve or send back.
 3. **Policy stage.** Automated checks block the run if the manifest fails strict schema validation, any change falls outside `allowed_paths`, the diff contains TODO/FIXME/HACK markers, or an existing ADR was modified.
 4. **Verifier stage.** Independent fresh-context check against every manifest exit criterion.
@@ -203,7 +207,7 @@ The `CLAUDE.md` starter is short and includes a `## Pipeline drafter notes` sect
 /agent-pipeline-claude:run "short description of the work"
 ```
 
-That's the whole command. The drafter reads your project, drafts the manifest, shows it in chat. An `AskUserQuestion` modal fires with `APPROVE` / `Adjust` / `BLOCK` — one click to start, or describe changes via the Adjust option.
+That's the whole command. The drafter reads your project, drafts the manifest, shows it in chat with a keyword gate at the end. Reply `APPROVE` (one word, case-insensitive) to start the pipeline, `REVISE` followed by changes to send back to the drafter, or `VIEW` to print the full manifest YAML before deciding.
 
 ### Other shapes
 
@@ -215,13 +219,13 @@ That's the whole command. The drafter reads your project, drafts the manifest, s
 
 ## The three human gates
 
-Each fires as a one-click `AskUserQuestion` modal. Three universal verbs as modal options: `APPROVE` to accept, `REPLAN` (with optional free-form description in the modal's text field) to revise, or — at the manager gate — `BLOCK` to halt. v1.3.0 retired the v0.5.x chat-text gate; v2.0 keeps the modal flow and adds the hook layer underneath.
+Each fires as a chat prompt with a deterministic keyword grammar. The orchestrator parses the first non-whitespace token of your next message, case-insensitive: `APPROVE` to accept, `REVISE`/`REPLAN` to send back with revisions, `BLOCK` to halt, `VIEW` to print the underlying artifact and re-ask. Anything else re-prints the prompt with a no-parse note. v1.3.0 → v2.1.0 routed these through `AskUserQuestion` modals; v2.2.1 reverses that experiment because Cowork's modal overlay hid the chat context the operator needed at gate-decision time.
 
-1. **Manifest gate.** The drafted scope contract. You review YAML in chat, then click APPROVE in the modal that fires immediately after. Describe changes via REPLAN to loop on revision (max 5 cycles before falling back to a hand-edit prompt).
-2. **Plan gate.** After research → plan, you see the planner's plan summary inline + a count of files in the blast radius + a list of open questions. Click APPROVE or REPLAN in the modal.
-3. **Manager gate.** After everything else completes, the manager produces a PROMOTE / BLOCK / REPLAN recommendation citing the verifier, drift-detector, and critic findings verbatim. Click APPROVE / BLOCK / REPLAN in the modal.
+1. **Manifest gate.** The drafted scope contract. You review YAML in chat, then reply `APPROVE` to start the run, `REVISE` followed by what to change to send it back to the drafter (max 5 cycles), or `VIEW` to print the full manifest first.
+2. **Plan gate.** After research → plan, you see the planner's plan summary inline + a count of files in the blast radius + a list of open questions. Reply `APPROVE` to start execution, `REPLAN` with revisions to send it back, `BLOCK` to halt with a finding, or `VIEW` to print the plan first.
+3. **Manager gate.** After everything else completes, the manager produces a PROMOTE / BLOCK / REPLAN recommendation citing the verifier, drift-detector, and critic findings verbatim. Reply `APPROVE` to accept, `BLOCK` to override and halt, `REPLAN` to revise the manifest/plan, or `VIEW` to print manager-decision.md first.
 
-When the auto-promote stage's six conditions all pass, the manager gate auto-fires (PROMOTE) and no human prompt appears. The run reports DONE-PROMOTED in its final summary.
+When the auto-promote stage's six conditions all pass, the manager gate skips entirely (no chat prompt) and the run reports DONE-PROMOTED in its final summary.
 
 ## What about specs and release plans?
 
@@ -335,9 +339,9 @@ If you skipped v1.0 and are upgrading directly from v0.5.x:
 
 - `/new-run` + `/run-pipeline` two-step is gone. Use `/agent-pipeline-claude:run "<description>"`.
 - Manifest is drafted from your project's spec; you no longer hand-author 11 fields from blank.
-- All three human gates are `AskUserQuestion` modal prompts (APPROVE / REPLAN / BLOCK as labels — one click each). The v0.5.x free-form chat-APPROVE ceremony was retired in v1.3.0.
+- All three human gates are chat prompts with deterministic first-token keyword parsing (`APPROVE` / `REVISE` / `REPLAN` / `BLOCK` / `VIEW`, case-insensitive). v1.3.0 routed gates through `AskUserQuestion` modals; v2.2.1 reverses that because Cowork's modal overlay hid chat context at gate-decision time. The modal-budget hook now denies every `AskUserQuestion` during active runs.
 
-Run `cd ~/.claude/plugins/marketplaces/agent-pipeline-claude && git pull && git checkout v2.2.0` to upgrade, then fully restart Cowork. See [CHANGELOG.md](CHANGELOG.md) for full migration notes.
+Run `cd ~/.claude/plugins/marketplaces/agent-pipeline-claude && git pull && git checkout v2.2.1` to upgrade, then fully restart Cowork. See [CHANGELOG.md](CHANGELOG.md) for full migration notes.
 
 ## Contributing
 

@@ -47,21 +47,22 @@ Project orientation:
   CI: <detected workflow files or "none">
 ```
 
-The summary is informational. **Then invoke `AskUserQuestion`** (one modal, three options) — do NOT ask the user to reply with `APPROVE` in chat. v1.3.0 retired the chat-text gate across the plugin because the LLM kept halting on the interpretive surface area; pipeline-init aligns with that for v2.0 (audit Cluster E).
+The summary is informational. **Then print the chat gate prompt** at the end of your reply naming the recognized keywords. Stop and wait for the operator's next message; parse the first non-whitespace token, case-insensitive.
 
-```text
-question: "Scaffold .pipelines/, scripts/policy/, and (if missing) a starter CLAUDE.md?"
-header:   "Scaffold"
-options:
-  - label: "APPROVE"
-    description: "Create .pipelines/, scripts/policy/, .gitignore entry, and starter CLAUDE.md if missing."
-  - label: "WAIT"
-    description: "Pause so you can fix something in the orientation summary first."
-  - label: "Adjust"
-    description: "Pass corrections in plain English to update the summary, then re-prompt."
+```
+=== Scaffold gate ===
+Scaffold .pipelines/, scripts/policy/, and (if missing) a starter CLAUDE.md?
+
+Reply with one word (case-insensitive):
+  APPROVE  — create .pipelines/, scripts/policy/, .gitignore entry, and starter CLAUDE.md if missing.
+  WAIT     — pause so you can fix something in the orientation summary first.
+  ADJUST   — describe corrections to the summary in your next message; the summary re-renders and the gate re-prompts.
+  CANCEL   — stop without scaffolding.
 ```
 
-Do NOT scaffold without an explicit APPROVE selection from the modal.
+Anything unrecognized re-prints the gate prompt with a no-parse note. Do NOT scaffold without an `APPROVE` reply from the operator.
+
+**Why chat, not modal:** v2.2.1 removed the `AskUserQuestion` modal infrastructure from gates (see CHANGELOG v2.2.1). The Cowork modal overlay hid the chat context the operator needed to read at gate-decision time, defeating the gate's purpose. v1.3.0 → v2.1.0 used modals for the run skill's three gates plus pipeline-init's orientation gate; v2.2.1 reverses all of them to chat with deterministic first-token keyword parsing. The interpretive-surface concern that drove the modal redesign is structurally addressed by the explicit keyword grammar in each gate prompt and the no-parse re-print branch.
 
 ### Step 3 — scaffold on APPROVE
 
@@ -100,7 +101,7 @@ exist.
    - `## Order of operations` — three sentences on how changes flow (e.g. "branch from main, work in slices, tag at rung close").
    - `## Tooling` — language, test runner, lint, type checker, pre-commit hooks.
    - `## Non-negotiables` — empty placeholder for the user to fill in.
-   - **(v2.1.0) `## Memory precedence during pipeline runs`** — fixed boilerplate block stating: *"During active agent-pipeline-claude runs, the pipeline's gate budget and hook policy are authoritative. Operator-layer memory rules about asking-before-deciding (e.g. `feedback_no_unilateral_product_decisions.md`) apply OUTSIDE pipeline runs only. Inside a run, the modal-budget hook blocks AskUserQuestion outside declared gates; the adopt-and-proceed pattern from `skills/run/references/run.md` governs how researcher recommendations are bound."* This boilerplate makes the precedence explicit at every project root, since memory files load globally and operators may not realize their broad rules conflict with the pipeline's autonomy contract.
+   - **(v2.1.0; updated v2.2.1) `## Memory precedence during pipeline runs`** — fixed boilerplate block stating: *"During active agent-pipeline-claude runs, the pipeline's chat gate keywords (`APPROVE` / `REVISE` / `REPLAN` / `BLOCK` / `VIEW`) and hook policy are authoritative. Operator-layer memory rules about asking-before-deciding (e.g. `feedback_no_unilateral_product_decisions.md`) apply OUTSIDE pipeline runs only. Inside a run, the v2.2.1 modal-budget hook denies every AskUserQuestion call; gates are chat-based, and non-gate decisions follow the adopt-and-proceed pattern from `skills/run/references/run.md`."* This boilerplate makes the precedence explicit at every project root, since memory files load globally and operators may not realize their broad rules conflict with the pipeline's autonomy contract.
 
    The user is expected to edit it. The plugin gives a starting shape, not the final word.
 
@@ -147,11 +148,11 @@ What the command DOES need to flag, at end of Step 3: if the user then runs `/ru
 
 ## Hard rules
 
-- Never overwrite an existing `CLAUDE.md`. If it exists, render an informational chat message naming the file's contents, then gate the decision through `AskUserQuestion` with options "APPEND pipeline drafter notes" / "SKIP" — do not ask the operator to reply `APPROVE` in chat.
-- Never overwrite an existing `.pipelines/` directory. If it exists, treat as re-init: render the summary in chat and gate the subset-to-refresh question through `AskUserQuestion` (see "Re-init handling" below).
+- Never overwrite an existing `CLAUDE.md`. If it exists, render an informational chat message naming the file's contents, then print a chat gate prompt with `APPEND` / `SKIP` as recognized keywords (case-insensitive; first non-whitespace token of operator's next message).
+- Never overwrite an existing `.pipelines/` directory. If it exists, treat as re-init: render the summary in chat and print the subset-to-refresh chat gate (see "Re-init handling" below).
 - Never copy any file outside the project root the user is in.
 - Never read or modify the plugin's own marketplace dir under `~/.claude/plugins/marketplaces/`.
-- Always produce an orientation summary BEFORE the modal gate fires. Show your reading in chat; gate the decision in the modal.
+- Always produce an orientation summary BEFORE the chat gate prompt fires. Show your reading in chat first, then print the gate.
 
 ## Greenfield handling
 
@@ -159,26 +160,26 @@ If `$ARGUMENTS` is a description paragraph (no spec file exists, no repo to read
 
 ```
 You gave me a description but no existing spec. Synthesizing a minimal
-spec now — review the draft below and use the modal to choose how to
-proceed.
+spec now — review the draft below and reply at the gate prompt to
+choose how to proceed.
 
 [synthesized minimal spec: 1-2 paragraphs of purpose, target audience,
 core capabilities, tech-stack inferences, license]
 ```
 
-Then invoke `AskUserQuestion`:
+Then print the chat gate prompt:
 
-```text
-question: "Write the synthesized SPEC.md to disk?"
-header:   "Write SPEC"
-options:
-  - label: "APPROVE"
-    description: "Save the draft above as SPEC.md at the project root."
-  - label: "WAIT"
-    description: "Don't write yet — let me edit the draft inline first."
+```
+=== Write SPEC gate ===
+Write the synthesized SPEC.md to disk?
+
+Reply with one word (case-insensitive):
+  APPROVE  — save the draft above as SPEC.md at the project root.
+  WAIT     — don't write yet; you'll edit the draft inline first.
+  CANCEL   — abandon the synthesis.
 ```
 
-Once approved, write `SPEC.md` at project root and continue to Step 2 with `SPEC.md` as the read source.
+Stop and wait for the operator's next message. Parse the first non-whitespace token, case-insensitive. Anything unrecognized re-prints the gate prompt with a no-parse note. Once `APPROVE` is parsed, write `SPEC.md` at project root and continue to Step 2 with `SPEC.md` as the read source.
 
 ## Re-init handling
 
@@ -188,20 +189,19 @@ If `.pipelines/` already exists, the project was initialized before. Render the 
 Project is already initialized (.pipelines/ exists with <N> files).
 ```
 
-Then invoke `AskUserQuestion` for the refresh subset:
+Then print the chat gate prompt for the refresh subset:
 
-```text
-question: "Refresh what? (.pipelines/ already exists)"
-header:   "Re-init"
-options:
-  - label: "Role files"
-    description: "Refresh role files from the current plugin version. Useful after upgrading the plugin."
-  - label: "Policy scripts"
-    description: "Refresh scripts/policy/ only."
-  - label: "Everything"
-    description: "Refresh role files + policy scripts + manifest template."
-  - label: "Cancel"
-    description: "Leave the existing setup as-is."
+```
+=== Re-init gate ===
+Refresh what? (.pipelines/ already exists)
+
+Reply with one word (case-insensitive):
+  ROLES        — refresh role files from the current plugin version. Useful after upgrading the plugin.
+  POLICY       — refresh scripts/policy/ only.
+  EVERYTHING   — refresh role files + policy scripts + manifest template.
+  CANCEL       — leave the existing setup as-is.
 ```
 
-Apply the selected option; do NOT touch the user's `.agent-runs/`, manifests, or CLAUDE.md without explicit consent (a separate modal if needed).
+Stop and wait for the operator's next message. Parse the first non-whitespace token, case-insensitive. Apply the selected option; do NOT touch the user's `.agent-runs/`, manifests, or CLAUDE.md without an explicit second `APPROVE` chat gate.
+
+**Why chat, not modal:** v2.2.1 reverses the v1.3.0 → v2.1.0 modal-gate design after the operator-UX failure where Cowork's modal overlay hid chat context at gate-decision time. The interpretive-surface concern from the original v0.5.x free-form chat ceremony is structurally addressed in v2.2.1 by the explicit keyword grammar in each prompt and the no-parse re-print branch.

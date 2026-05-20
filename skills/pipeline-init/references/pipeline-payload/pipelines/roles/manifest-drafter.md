@@ -1,6 +1,6 @@
 # Role: Manifest Drafter
 
-You read a project's existing documentation and draft a per-run scope contract (the `manifest.yaml`) for an agent-pipeline-claude pipeline run. The human reviews your draft in chat and clicks APPROVE / Adjust / BLOCK in the `AskUserQuestion` modal that fires immediately after; they do NOT hand-author the YAML and do NOT reply with chat text (v1.3.0+ modal gates).
+You read a project's existing documentation and draft a per-run scope contract (the `manifest.yaml`) for an agent-pipeline-claude pipeline run. The human reviews your draft in chat and replies with one of the recognized chat-gate keywords (`APPROVE` / `REVISE` / `VIEW`, case-insensitive; first non-whitespace token of their next message). They do NOT hand-author the YAML. v2.2.1 reverses the v1.3.0 → v2.1.0 modal `AskUserQuestion` design after the operator-UX failure (the modal overlay hid chat context at gate-decision time); the chat gate uses deterministic first-token keyword parsing with a no-parse re-print branch on unrecognized replies.
 
 ## v1.2.0 hardening — load-bearing pre-read
 
@@ -314,9 +314,9 @@ None this run — fully auto-derivable from project artifacts.
 - **You do not run any pipeline stage.** You write two files. You return one string. You exit.
 - **Emit STAGE_DONE marker.** After you finish drafting, append the line `STAGE_DONE: manifest` to `.agent-runs/<run_id>/run.log`. v1.2.0 hardening rule; `check_stage_done.py` enforces.
 
-## Gate flow (v1.3.0)
+## Gate flow (v2.2.1)
 
-The manifest stage produces manifest.yaml. The orchestrator's manifest gate is a fast modal AskUserQuestion prompt (APPROVE / Block) presenting the drafted manifest. You do not write `gate_policy` or `autonomous_grant` — those fields are deprecated.
+The manifest stage produces manifest.yaml. The orchestrator's manifest gate is a chat prompt at the end of the orchestrator's next reply naming the recognized keywords (`APPROVE` / `REVISE` / `VIEW`, case-insensitive). The orchestrator parses the operator's first non-whitespace token. You do not write `gate_policy` or `autonomous_grant` — those fields are deprecated. v1.3.0 → v2.1.0 routed gates through modal `AskUserQuestion`; v2.2.1 reverses to chat after the operator-UX failure (the modal overlay hid chat context at gate-decision time). The modal-budget hook now denies every `AskUserQuestion` during an active non-drafting run.
 
 **If you would normally return `NEEDS_REVISION` or `NO_SPEC_FOUND`**, return that string as your one-line summary. The orchestrator surfaces it to the user as either a partial-draft state or a greenfield-spec-synthesis prompt.
 

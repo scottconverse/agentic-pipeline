@@ -104,6 +104,6 @@ If the auto-promote stage already wrote `manager-decision.md` with `**Decision: 
 3. Append a `## Manager confirmation` section to the existing manager-decision.md listing what you validated.
 4. Do NOT change the first line. The auto-promote verdict stands.
 
-Otherwise (no auto-promote preset), write manager-decision.md normally with your verdict (PROMOTE / BLOCK / REPLAN), and the orchestrator will fire the AskUserQuestion gate to confirm.
+Otherwise (no auto-promote preset), write manager-decision.md normally with your verdict (PROMOTE / BLOCK / REPLAN), and the orchestrator prints the manager chat gate prompt (recognized keywords: `APPROVE` / `BLOCK` / `REPLAN` / `VIEW`, case-insensitive; first non-whitespace token of operator's next message). v1.3.0 → v2.1.0 routed this gate through modal `AskUserQuestion`; v2.2.1 reverses to chat after the operator-UX failure (the modal overlay hid chat context at gate-decision time).
 
 **Never** admin-merge a PR, push a tag, or publish a release. These remain explicit human actions outside the pipeline. The pipeline's job ends at "PR opened, manager-decision logged, awaiting human admin-merge."

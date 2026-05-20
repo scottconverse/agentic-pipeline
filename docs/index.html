@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>agent-pipeline-claude — multi-step Claude Code work without drift</title>
-<meta name="description" content="A Claude Code plugin that runs research → plan → execute → verify → critique end-to-end with three human gates, an opt-in real-time judge, and machine-checkable auto-promote. One slash command. Drafted scope contracts from your project's spec.">
+<meta name="description" content="A Claude Code plugin that runs research → plan → execute → verify → critique end-to-end with three chat-based human gates, an opt-in real-time judge, and machine-checkable auto-promote. One slash command. Drafted scope contracts from your project's spec.">
 <style>
 :root {
   --fg: #181715;
@@ -164,11 +164,11 @@ footer a { color: var(--fg-muted); }
 <div class="wrap">
 
 <header>
-  <div class="eyebrow">Claude Code plugin · v2.0.0</div>
+  <div class="eyebrow">Claude Code plugin · v2.2.1</div>
   <h1>Multi-step Claude Code work without drift.</h1>
-  <p class="tagline">One slash command. Drafted scope contracts from your project's spec. Research → plan → execute → verify → critique runs end-to-end with three modal human gates, eleven Cowork lifecycle hooks, persistent file-backed run memory + Mem0 cross-session bridge, directive-contract pre-approval, scope-lock authority, and machine-checkable auto-promote.</p>
+  <p class="tagline">One slash command. Drafted scope contracts from your project's spec. Research → plan → execute → verify → critique runs end-to-end with three chat-based human gates (deterministic first-token keyword parsing: APPROVE / REVISE / REPLAN / BLOCK / VIEW), eleven Cowork lifecycle hooks, persistent file-backed run memory + Mem0 cross-session bridge, directive-contract pre-approval, scope-lock authority, and machine-checkable auto-promote. Built on v2.0.0's hook + memory + directive layers.</p>
   <div class="badges">
-    <span class="badge version">v2.0.0</span>
+    <span class="badge version">v2.2.1 · v2.0.0 base</span>
     <span class="badge tests">all tests green</span>
     <span class="badge">cleanroom-verified</span>
     <span class="badge">Apache-2.0</span>
@@ -186,16 +186,16 @@ footer a { color: var(--fg-muted); }
   <h2>The problem</h2>
   <p class="lead">Multi-step agentic work drifts. The assistant runs a plan, then in the middle of step 4 it reinterprets the goal, edits files it wasn't supposed to touch, and the user discovers what it actually did only after the damage is done.</p>
   <p>The usual responses don't work. A second AI auditing the first AI gets caught in the same drift. A more careful single-AI loop just papers over the drift class. A long human checklist is unenforceable; people skim.</p>
-  <p>This plugin enforces a structural pattern. Every run starts with a manifest you approve via a one-click <code>AskUserQuestion</code> modal. Stages are spawned as Agent sub-tasks with bounded role files. The drift-detector reads the actual diff and flags every file change outside the manifest. The critic runs as a separate Agent so it can't co-conspire. Auto-promote is six machine-checkable conditions; manager-merge runs only when those pass.</p>
+  <p>This plugin enforces a structural pattern. Every run starts with a manifest you approve via a chat keyword reply: <code>APPROVE</code> to start, <code>REVISE</code> with edit instructions to send back, <code>VIEW</code> to print the full YAML first. The orchestrator parses the first non-whitespace token of your next message, case-insensitive — no LLM interpretation surface. Stages are spawned as Agent sub-tasks with bounded role files. The drift-detector reads the actual diff and flags every file change outside the manifest. The critic runs as a separate Agent so it can't co-conspire. Auto-promote is six machine-checkable conditions; manager-merge runs only when those pass.</p>
 </section>
 
 <section id="what-it-does">
   <h2>What a run looks like</h2>
   <p>You type one slash command. The plugin reads your project's spec, drafts a scope contract from it, and shows you YAML in chat.</p>
   <pre><code>/agent-pipeline-claude:run "close QA-005 conflict-409 race"</code></pre>
-  <div class="stage-flow">manifest-drafter  →  [gate 1: modal APPROVE]
+  <div class="stage-flow">manifest-drafter  →  [gate 1: chat APPROVE / REVISE / VIEW]
 researcher        →  research.md
-planner           →  plan.md           →  [gate 2: modal APPROVE]
+planner           →  plan.md           →  [gate 2: chat APPROVE / REPLAN / BLOCK / VIEW]
 test-writer       →  failing-tests-report.md
 executor          →  implementation-report.md
 policy            →  policy-report.md  (14 stdlib-only checks; v2.0)
@@ -203,22 +203,22 @@ verifier          →  verifier-report.md
 drift-detector    →  drift-report.md
 critic            →  critic-report.md
 auto-promote      →  auto-promote-report.md  (6 conditions; auto-fires on green)
-manager           →  manager-decision.md     →  [gate 3: modal APPROVE]</div>
+manager           →  manager-decision.md     →  [gate 3: chat APPROVE / BLOCK / REPLAN / VIEW]</div>
   <p>Every stage writes an artifact to <code>.agent-runs/&lt;run-id&gt;/</code>. The run is resumable from any failed stage via <code>/agent-pipeline-claude:run resume &lt;run-id&gt;</code>. The judge layer (opt-in) sits between stages and supervises every external-facing or high-risk action against the manifest. The drift-detector catches edits to files outside <code>allowed_paths</code>. The critic runs as a separate Agent and can't co-conspire with the executor.</p>
 </section>
 
 <section>
-  <h2>Three human gates — modal, one click each</h2>
+  <h2>Three human gates — chat keyword reply, deterministic parsing</h2>
   <div class="gate-card">
-    <strong>Gate 1 — Manifest approval.</strong> The drafter reads your project's spec / release plan / scope-lock / design notes and produces a YAML manifest with every field annotated by source. A modal prompt (<code>AskUserQuestion</code>) appears with <strong>APPROVE</strong> / <strong>Adjust</strong> / <strong>BLOCK</strong> — one click each.
+    <strong>Gate 1 — Manifest approval.</strong> The drafter reads your project's spec / release plan / scope-lock / design notes and produces a YAML manifest with every field annotated by source. A chat prompt names the recognized keywords: <strong>APPROVE</strong> (start the run), <strong>REVISE</strong> (send back to drafter with edits), <strong>VIEW</strong> (print full manifest). The orchestrator parses the first non-whitespace token of your next message, case-insensitive.
   </div>
   <div class="gate-card">
-    <strong>Gate 2 — Plan approval.</strong> After research, the planner produces a step-numbered plan with blast radius. The modal offers <strong>APPROVE</strong> / <strong>REPLAN</strong> / <strong>BLOCK</strong>; you can also type a free-form REPLAN reason in the modal's text field.
+    <strong>Gate 2 — Plan approval.</strong> After research, the planner produces a step-numbered plan with blast radius. The chat prompt names <strong>APPROVE</strong> / <strong>REPLAN</strong> / <strong>BLOCK</strong> / <strong>VIEW</strong>. <code>REPLAN</code> followed by free-form text on the same line or in the next message sends the plan back with your revisions.
   </div>
   <div class="gate-card">
-    <strong>Gate 3 — Manager approval.</strong> After verify / drift / critic / auto-promote complete, the manager produces a structured decision document. The modal offers <strong>APPROVE</strong> / <strong>REPLAN</strong> / <strong>BLOCK</strong>. When the six auto-promote conditions all pass, this gate fires automatically — no click needed.
+    <strong>Gate 3 — Manager approval.</strong> After verify / drift / critic / auto-promote complete, the manager produces a structured decision document. The chat prompt names <strong>APPROVE</strong> / <strong>BLOCK</strong> / <strong>REPLAN</strong> / <strong>VIEW</strong>. When the six auto-promote conditions all pass, this gate skips entirely — no chat prompt fires.
   </div>
-  <p>v1.3.0 retired the v0.5.x free-form "type APPROVE in chat" ceremony because the LLM kept halting on the interpretive surface area of free-text gates. v2.0 keeps the modal flow and adds an eleven-event Cowork hook layer underneath. Runs survive across sessions; you can resume any run from its last gate.</p>
+  <p>v1.3.0 → v2.1.0 routed gates through <code>AskUserQuestion</code> modal prompts to eliminate the LLM's interpretive surface area on free-text gates. That worked on the LLM side but failed on the operator side: Cowork's modal overlay hid the chat context the operator needed at gate-decision time. v2.2.1 reverses to chat with deterministic first-token keyword parsing — the interpretive surface concern is now structurally addressed by the modal-budget hook (denies every <code>AskUserQuestion</code> during active non-drafting runs), the explicit keyword grammar in each prompt, and a no-parse branch that re-prints the gate instead of guessing. Runs survive across sessions; you can resume any run from its last gate.</p>
 </section>
 
 <section id="install">
@@ -242,7 +242,7 @@ manager           →  manager-decision.md     →  [gate 3: modal APPROVE]</div
   <pre><code>/agent-pipeline-claude:pipeline-init</code></pre>
   <p>The plugin scans for your spec, release plan, scope-lock, design notes, CLAUDE.md, and HANDOFF.md. It scaffolds <code>.pipelines/</code> (14 role files, 5 pipeline definitions, 3 templates) and <code>scripts/policy/</code> (6 stdlib-only validation scripts) into your project. Then:</p>
   <pre><code>/agent-pipeline-claude:run "your task description"</code></pre>
-  <p>The manifest-drafter runs. You click APPROVE in the modal that fires immediately after. The pipeline executes end-to-end.</p>
+  <p>The manifest-drafter runs. You reply <code>APPROVE</code> in chat (one word, case-insensitive — first non-whitespace token of your next message) to start the pipeline. Reply <code>REVISE</code> with edits to send the manifest back. Reply <code>VIEW</code> to print the full YAML before deciding. The pipeline executes end-to-end.</p>
 </section>
 
 <section>
@@ -291,13 +291,19 @@ manager           →  manager-decision.md     →  [gate 3: modal APPROVE]</div
 </section>
 
 <section>
-  <h2>What changed in v2.0.0</h2>
+  <h2>What changed in v2.2.1</h2>
+  <ul>
+    <li><strong>Chat-based gates with deterministic keyword grammar.</strong> Reverses the v1.3.0 → v2.1.0 modal-gate experiment after the operator-UX failure (Cowork's modal overlay hid chat context at gate-decision time). Each gate prints a structured prompt naming <code>APPROVE</code> / <code>REVISE</code> / <code>REPLAN</code> / <code>BLOCK</code> / <code>VIEW</code> as recognized keywords. The orchestrator parses the first non-whitespace token of your reply, case-insensitive. Anything unrecognized re-prints the prompt — no LLM interpretation.</li>
+    <li><strong>Modal-budget hook tightened to deny-all.</strong> Every <code>AskUserQuestion</code> during an active non-drafting pipeline run returns deny with <code>MODAL_BUDGET_EXCEEDED</code>. The v2.1.0 gate-stage exception is gone.</li>
+    <li><strong>Auto-delete stale plugin cache directories on SessionStart.</strong> Each plugin upgrade left the prior version's cache on disk (1.5-2 MB each). v2.2.1 deletes every sibling of the loaded version whose name parses as a strictly-lower semver. Idempotent, once per session.</li>
+  </ul>
+  <h2>What changed in v2.0.0 (base layer, preserved)</h2>
   <ul>
     <li><strong>Eleven-event Cowork lifecycle hook layer.</strong> SessionStart / UserPromptSubmit / PreToolUse / PermissionRequest / PostToolUse / PostToolUseFailure / PreCompact / PostCompact / SubagentStop / Stop / SessionEnd. Records persistent run memory; re-injects <code>handoff_current.md</code> after context compaction.</li>
     <li><strong>Persistent file-backed run memory.</strong> <code>.agent-runs/&lt;run-id&gt;/memory/</code> with events / turns / decisions / open_loops / probe / handoff_current. Layer A is unconditional (always written); Layer B (Mem0 OSS or platform) is best-effort behind a circuit breaker.</li>
     <li><strong>Directive contracts.</strong> Pre-approved manifest + scope-lock + acceptance assertions in <code>.agent-runs/&lt;id&gt;/directive.yaml</code> let a run auto-approve manifest/plan gates when content is byte-identical. SHA-256 hash bound at conformance; exit-3 on resume-time divergence.</li>
     <li><strong>Scope-lock authority.</strong> <code>scripts/check_scope_lock.py</code> + <code>check_rung_file_ownership.py</code> + <code>check_release_docs_consistency.py</code> validate edited paths, commit messages, and doc claims against the canonical release-plan rung.</li>
-    <li><strong>v1.3.0 surface preserved.</strong> Modal gates (<code>AskUserQuestion</code>) for manifest / plan / manager. No grant files, no autonomous-mode token. Evidence-driven auto-promote stays the path to hands-off.</li>
+    <li><strong>v1.3.0 modal-gate surface — superseded by v2.2.1 chat gates.</strong> v2.0 carried forward v1.3.0's modal flow (one click per gate). v2.2.1 reverses to chat after the operator-UX failure described above. Evidence-driven auto-promote stays the path to hands-off; no grant files, no autonomous-mode token.</li>
   </ul>
   <p>Full release notes: <a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -315,7 +321,7 @@ manager           →  manager-decision.md     →  [gate 3: modal APPROVE]</div
 </section>
 
 <footer>
-  <p>By <a href="https://github.com/scottconverse">Scott Converse</a>. Apache-2.0 licensed. v2.0.0 released 2026-05-18.</p>
+  <p>By <a href="https://github.com/scottconverse">Scott Converse</a>. Apache-2.0 licensed. v2.2.1 released 2026-05-20 (chat-gate restoration; v2.0.0 base layer released 2026-05-18).</p>
   <p>
     <a href="https://github.com/scottconverse/agent-pipeline-claude">Repo</a> ·
     <a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/USER-MANUAL.md">Manual</a> ·

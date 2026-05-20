@@ -130,22 +130,69 @@ def test_grant_autonomous_is_deprecation_shim():
 
 
 # ---------------------------------------------------------------------------
-# Run skill: uses AskUserQuestion not chat-APPROVE ceremony
+# Run skill: uses chat-based gate keyword grammar (v2.2.1 reversal)
 # ---------------------------------------------------------------------------
 
-def test_run_skill_references_askuserquestion():
-    """SKILL.md of /run must reference AskUserQuestion as the gate tool."""
+# v2.2.1: the v1.3.0 → v2.1.0 modal `AskUserQuestion` design was reversed
+# after the operator-UX failure (Cowork's modal overlay hid the chat
+# context the operator needed at gate-decision time). Gates are now chat
+# prompts with deterministic first-token keyword parsing. These tests
+# pin the chat-gate contract.
+
+
+def test_run_skill_uses_chat_gates():
+    """v2.2.1: SKILL.md of /run must instruct chat-based gates with the
+    explicit keyword grammar, NOT modal AskUserQuestion as the gate tool.
+    (Formerly test_run_skill_references_askuserquestion under v1.3.0.)"""
     text = _read(REPO_ROOT / "skills" / "run" / "SKILL.md")
-    assert "AskUserQuestion" in text, (
-        "v1.3.0 run skill must use AskUserQuestion for the three human gates."
+    # The chat keyword grammar must be named so the orchestrator's tool
+    # mapping section is unambiguous.
+    assert "chat gate" in text.lower(), (
+        "v2.2.1 run skill must instruct chat-based gates in its tool mapping."
+    )
+    # The five recognized keywords must be cited so the orchestrator can
+    # reproduce them in the gate prompts.
+    for keyword in ("APPROVE", "REVISE", "REPLAN", "BLOCK", "VIEW"):
+        assert keyword in text, (
+            "v2.2.1 run skill must name the recognized chat-gate keyword "
+            f"{keyword!r} so the orchestrator's gate prompts are consistent."
+        )
+    # The skill must explicitly forbid firing AskUserQuestion for gates
+    # (the modal-budget hook denies it; documenting the rule here keeps
+    # the contract visible to operators reading the skill).
+    assert "modal-budget hook" in text.lower() or "MODAL_BUDGET_EXCEEDED" in text, (
+        "v2.2.1 run skill must reference the modal-budget hook as the "
+        "structural backstop on AskUserQuestion."
     )
 
 
-def test_run_procedure_uses_modal_gates():
-    """references/run.md must describe modal gates, not chat-APPROVE ceremony."""
+def test_run_procedure_uses_chat_gates():
+    """v2.2.1: references/run.md must describe chat-based gates with
+    deterministic first-token keyword parsing. The v0.5.x chat-APPROVE
+    ceremony is the surface that returns under v2.2.1; the modal-budget
+    hook + explicit keyword grammar + no-parse re-print are the
+    structural backstops that the original ceremony lacked.
+    (Formerly test_run_procedure_uses_modal_gates under v1.3.0.)"""
     text = _read(REPO_ROOT / "skills" / "run" / "references" / "run.md")
-    assert "AskUserQuestion" in text
-    # The v1.2.x hard rule that BANNED AskUserQuestion must be gone.
+    # The chat keyword grammar must be present in the gate sections.
+    for keyword in ("APPROVE", "REVISE", "REPLAN", "BLOCK", "VIEW"):
+        assert keyword in text, (
+            f"v2.2.1 run.md must include the chat-gate keyword {keyword!r}."
+        )
+    # First-token parsing must be documented so the orchestrator parses
+    # operator replies deterministically.
+    assert "first non-whitespace token" in text.lower() or \
+           "first-token" in text.lower(), (
+        "v2.2.1 run.md must document deterministic first-token keyword "
+        "parsing for the chat gates."
+    )
+    # Case-insensitivity must be explicit so operators can type either case.
+    assert "case-insensitive" in text.lower(), (
+        "v2.2.1 run.md must document case-insensitive keyword parsing."
+    )
+    # The v1.2.x hard rule that BANNED AskUserQuestion ALSO must still be
+    # gone (preserved from the v1.3.0 invariant — the BAN was a different
+    # failure mode, distinct from the v2.2.1 modal-budget hook deny).
     assert "Never invoke `AskUserQuestion`" not in text
     assert "never substitute `AskUserQuestion`" not in text.lower()
 
@@ -160,54 +207,82 @@ def test_run_skill_does_not_require_grant():
 
 
 # ---------------------------------------------------------------------------
-# Pipeline-init skill: also uses AskUserQuestion (audit Pass 5 / Cluster E)
+# Pipeline-init skill: uses chat-based gate keyword grammar (v2.2.1 reversal)
 # ---------------------------------------------------------------------------
 #
-# v1.3.0 retired the chat-`APPROVE` ceremony for the three run-time gates
-# (manifest, plan, manager). The pipeline-init skill missed that
-# bandwagon — it kept telling Claude to "Render the orientation summary
-# as a plain chat message — do not use AskUserQuestion for the APPROVE
-# gate." Pass 5 aligns pipeline-init with the v1.3.0 design: the chat
-# message stays (it's informational), but the decision goes through a
-# modal prompt.
+# v1.3.0 → v2.1.0 aligned pipeline-init with the modal-gate design that
+# the run skill carried. v2.2.1 reverses both back to chat-based gates
+# after the operator-UX failure (Cowork's modal overlay hid the chat
+# context the operator needed at gate-decision time). The chat surface
+# is now the v2.2.1 contract: pipeline-init's scaffold gate, greenfield
+# SPEC.md gate, and re-init refresh gate all use chat prompts with
+# deterministic first-token keyword parsing.
 
 
-def test_pipeline_init_skill_references_askuserquestion():
-    """SKILL.md of /pipeline-init must reference AskUserQuestion for the
-    gate flow (Pass 5 / Cluster E)."""
+def test_pipeline_init_skill_uses_chat_gates():
+    """v2.2.1: SKILL.md of /pipeline-init must instruct chat-based gates
+    with the explicit keyword grammar for the approve/wait/cancel
+    decision, NOT modal AskUserQuestion.
+    (Formerly test_pipeline_init_skill_references_askuserquestion.)"""
     text = _read(REPO_ROOT / "skills" / "pipeline-init" / "SKILL.md")
-    assert "AskUserQuestion" in text, (
-        "Pass 5 pipeline-init skill must use AskUserQuestion for the "
-        "approve / wait / cancel decision."
+    # The chat keyword grammar must be named so operators reading the
+    # skill see the recognized words.
+    assert "chat gate" in text.lower() or "chat keyword" in text.lower(), (
+        "v2.2.1 pipeline-init SKILL.md must instruct chat-based gates."
     )
-
-
-def test_pipeline_init_skill_does_not_ban_askuserquestion():
-    """The pre-Pass-5 SKILL.md had the explicit line `do not use
-    AskUserQuestion for the APPROVE gate`. That instruction is gone."""
-    text = _read(REPO_ROOT / "skills" / "pipeline-init" / "SKILL.md")
-    forbidden = (
-        "do not use `AskUserQuestion` for the APPROVE gate",
-        "do not use AskUserQuestion for the APPROVE gate",
-    )
-    for needle in forbidden:
-        assert needle not in text, (
-            f"pipeline-init SKILL.md still contains the pre-Pass-5 ban "
-            f"on AskUserQuestion ({needle!r}). v1.3.0 retired chat-APPROVE."
+    for keyword in ("APPROVE", "WAIT", "CANCEL"):
+        assert keyword in text, (
+            "v2.2.1 pipeline-init SKILL.md must name the recognized "
+            f"chat-gate keyword {keyword!r}."
         )
 
 
-def test_pipeline_init_procedure_uses_modal_gates():
-    """references/pipeline-init.md must instruct Claude to invoke
-    AskUserQuestion for the scaffold / re-init / greenfield gates."""
-    text = _read(REPO_ROOT / "skills" / "pipeline-init" / "references" / "pipeline-init.md")
-    assert text.count("AskUserQuestion") >= 3, (
-        "pipeline-init.md should reference AskUserQuestion at least at "
-        "the scaffold gate, the greenfield SPEC.md gate, and the "
-        "re-init refresh gate."
+def test_pipeline_init_skill_describes_v2_2_1_chat_gates():
+    """v2.2.1: pipeline-init SKILL.md must describe the v2.2.1 chat-gate
+    contract — deterministic first-token keyword parsing — rather than
+    the v1.3.0 → v2.1.0 modal flow it superseded.
+    (Formerly test_pipeline_init_skill_does_not_ban_askuserquestion.)"""
+    text = _read(REPO_ROOT / "skills" / "pipeline-init" / "SKILL.md")
+    # First-token parsing must be documented or referenced.
+    assert "first non-whitespace token" in text.lower() or \
+           "first-token" in text.lower(), (
+        "v2.2.1 pipeline-init SKILL.md must document the deterministic "
+        "first-token parsing contract for chat gates."
     )
-    # The pre-Pass-5 free-text gate instructions must be gone (no
-    # `Reply with a, b, c, or d` or `Reply APPROVE` in chat).
+    # v2.2.1 must be cited so the version-reversal context is preserved.
+    assert "v2.2.1" in text, (
+        "v2.2.1 pipeline-init SKILL.md must cite v2.2.1 as the chat-gate "
+        "reversal version."
+    )
+
+
+def test_pipeline_init_procedure_uses_chat_gates():
+    """v2.2.1: references/pipeline-init.md must instruct Claude to print
+    chat gate prompts (not invoke AskUserQuestion) for the scaffold /
+    re-init / greenfield gates. The chat-keyword grammar must appear at
+    each of the three gate points.
+    (Formerly test_pipeline_init_procedure_uses_modal_gates.)"""
+    text = _read(REPO_ROOT / "skills" / "pipeline-init" / "references" / "pipeline-init.md")
+    # At least three chat gate prompts (scaffold, greenfield SPEC, re-init).
+    # Each gate prompt uses the `=== <name> gate ===` heading format.
+    assert text.count("=== ") >= 3, (
+        "v2.2.1 pipeline-init.md should print at least three chat gate "
+        "prompts (scaffold, greenfield SPEC.md, re-init refresh)."
+    )
+    # The recognized chat-gate keywords for scaffold gate.
+    for keyword in ("APPROVE", "WAIT", "CANCEL"):
+        assert keyword in text, (
+            "v2.2.1 pipeline-init.md must use the chat-gate keyword "
+            f"{keyword!r}."
+        )
+    # First-token parsing must be documented at least once.
+    assert "first non-whitespace token" in text.lower(), (
+        "v2.2.1 pipeline-init.md must document deterministic first-token "
+        "keyword parsing."
+    )
+    # The pre-Pass-5 v0.5.x free-text gate variants must still be gone —
+    # v2.2.1's chat ceremony uses the structured `Reply with one word`
+    # phrasing, not the looser pre-v1.3.0 forms.
     assert "Reply with a, b, c, or d" not in text
     assert "Reply `APPROVE` to scaffold" not in text
 
@@ -223,13 +298,27 @@ def test_pipeline_init_procedure_uses_modal_gates():
 # code actually did. These tests pin the post-Pass-11 invariants.
 
 
-def test_readme_does_not_instruct_reply_approve_to_start():
-    """README's quick-start must not say `Reply APPROVE to start`. The
-    real flow is: read the orientation summary in chat, then click the
-    APPROVE modal that follows (Pass 5 / Cluster E aligns pipeline-init
-    + run skill on modal gates)."""
+def test_readme_describes_chat_gate_reply():
+    """v2.2.1: README must describe the chat-gate reply pattern — the
+    operator types `APPROVE` (or `REVISE` / `VIEW`) as the first
+    non-whitespace token of their next chat message, case-insensitive.
+    v1.3.0 → v2.1.0 banned `Reply APPROVE` instructions because the flow
+    was modal-click; v2.2.1 reverses to chat with deterministic
+    first-token keyword parsing, so the README now DOES instruct the
+    chat reply pattern (but with structured prompts naming the
+    recognized keywords, not the loose v0.5.x ceremony).
+    (Formerly test_readme_does_not_instruct_reply_approve_to_start.)"""
     text = _read(REPO_ROOT / "README.md")
-    assert "Reply APPROVE to start" not in text
+    # The README must name the chat-gate reply pattern using at least
+    # one of the canonical instructional phrasings.
+    assert (
+        "reply `APPROVE`" in text.lower()
+        or "reply with one word" in text.lower()
+        or "reply approve" in text.lower()
+    ), (
+        "v2.2.1 README must instruct the operator to reply at the chat "
+        "gate with one of the recognized keywords."
+    )
 
 
 def test_readme_upgrade_instruction_targets_v2():
@@ -239,7 +328,7 @@ def test_readme_upgrade_instruction_targets_v2():
     assert "git checkout v1.1.0" not in text, (
         "README still tells operators to `git checkout v1.1.0` — stale"
     )
-    assert "git checkout v2.2.0" in text
+    assert "git checkout v2.2.1" in text
 
 
 def test_user_manual_upgrade_instruction_targets_v2():
@@ -247,7 +336,7 @@ def test_user_manual_upgrade_instruction_targets_v2():
     snippet (same instruction in both surfaces)."""
     text = _read(REPO_ROOT / "USER-MANUAL.md")
     assert "git checkout v1.1.0" not in text
-    assert "git checkout v2.2.0" in text
+    assert "git checkout v2.2.1" in text
 
 
 def test_architecture_current_version_is_v2():
@@ -337,70 +426,106 @@ def test_check_manifest_schema_error_does_not_mention_chat_approve():
 # find_repo_root. Pass 11b closes the doc-surface fan-out.
 
 
-def test_landing_page_stage_flow_uses_modal_not_chat_approve():
-    """docs/index.html stage-flow diagram (the <pre class='stage-flow'>
-    block) must show `modal APPROVE` for the three gate annotations,
-    not `chat APPROVE`."""
+def test_landing_page_stage_flow_uses_chat_approve():
+    """v2.2.1: docs/index.html stage-flow diagram must label the three
+    gate annotations with `chat APPROVE` (plus the rest of the keyword
+    grammar) — chat is the v2.2.1 gate surface. v1.3.0 → v2.1.0 used
+    `modal APPROVE` labels; v2.2.1 reverses to chat.
+    (Formerly test_landing_page_stage_flow_uses_modal_not_chat_approve.)"""
     text = _read(REPO_ROOT / "docs" / "index.html")
-    assert "chat APPROVE" not in text, (
-        "landing page still labels gates as `chat APPROVE`; should be `modal APPROVE`"
+    assert "chat APPROVE" in text, (
+        "v2.2.1 landing page stage-flow must label gates as `chat APPROVE`"
     )
 
 
-def test_landing_page_three_gates_heading_says_modal():
-    """The <h2> for the three-gates section must name modal gates, and
-    the gate-card body copy must not say `Reply APPROVE`."""
+def test_landing_page_three_gates_heading_says_chat():
+    """v2.2.1: the <h2> for the three-gates section must describe chat-
+    based gates (with the deterministic keyword grammar) — chat is the
+    v2.2.1 surface.
+    (Formerly test_landing_page_three_gates_heading_says_modal.)"""
     text = _read(REPO_ROOT / "docs" / "index.html")
-    assert "Three human gates, in chat" not in text, (
-        "landing page heading still says `Three human gates, in chat` — should be modal-labelled"
+    # Heading should describe chat-based gates.
+    assert "Three human gates" in text, (
+        "landing page must keep the three-human-gates heading"
     )
-    assert "Reply " not in text or "Reply APPROVE" not in text
-    assert "modal" in text.lower(), "landing page should describe gates as modal"
+    assert "chat" in text.lower(), (
+        "v2.2.1 landing page must describe gates as chat"
+    )
+    # The keyword grammar must appear on the page so operators see the
+    # recognized keywords up front.
+    for keyword in ("APPROVE", "REVISE", "REPLAN", "VIEW"):
+        assert keyword in text, (
+            f"v2.2.1 landing page must name the chat-gate keyword {keyword!r}"
+        )
 
 
-def test_landing_page_does_not_claim_gates_are_chat_messages_not_modal():
-    """The pre-Pass-11b copy declared `Gates are chat messages, not
-    modal popups.` That's the inverse of the truth."""
+def test_landing_page_describes_gates_as_chat_with_deterministic_parsing():
+    """v2.2.1: the landing-page copy must describe gates as chat-based
+    with deterministic first-token keyword parsing (the v2.2.1 contract).
+    The Pass 11b copy `Gates are chat messages, not modal popups.` was
+    the inverse of the v1.3.0 → v2.1.0 truth; v2.2.1 reverses again and
+    chat IS the gate surface.
+    (Formerly test_landing_page_does_not_claim_gates_are_chat_messages_not_modal.)"""
     text = _read(REPO_ROOT / "docs" / "index.html")
-    assert "Gates are chat messages, not modal popups" not in text
+    # The Problem section or the three-gates section must describe chat
+    # gates with deterministic parsing.
+    assert "first non-whitespace token" in text.lower() or \
+           "deterministic" in text.lower(), (
+        "v2.2.1 landing page must describe chat gates with deterministic "
+        "first-token keyword parsing."
+    )
 
 
-def test_landing_page_first_use_does_not_say_approve_in_chat():
-    """`You approve in chat.` in the First-use section is wrong post-v1.3.0."""
+def test_landing_page_first_use_describes_chat_approve():
+    """v2.2.1: the First-use section must instruct the operator to reply
+    `APPROVE` in chat (the v2.2.1 contract). v1.3.0 → v2.1.0 said
+    `click APPROVE in the modal`; v2.2.1 reverses to chat reply.
+    (Formerly test_landing_page_first_use_does_not_say_approve_in_chat.)"""
     text = _read(REPO_ROOT / "docs" / "index.html")
-    assert "You approve in chat" not in text
+    # The First-use section must describe replying APPROVE in chat.
+    # Use the case-sensitive match for `APPROVE` as a keyword and the
+    # case-insensitive match for `reply`/`chat` so the test is robust to
+    # phrasing tweaks.
+    assert "<code>APPROVE</code>" in text or "reply `APPROVE`" in text.lower(), (
+        "v2.2.1 landing-page first-use section must instruct the operator "
+        "to reply with the APPROVE keyword in chat."
+    )
 
 
-def test_landing_page_problem_section_does_not_say_approve_in_chat():
-    """The Problem section's value pitch (`Every run starts with a
-    manifest you approve in chat.`) was missed by Pass 11b's first pass.
-    The lowercase 'approve in chat' phrase must be replaced with the
-    modal description anywhere it appears in operator-facing copy."""
+def test_landing_page_problem_section_describes_chat_approve():
+    """v2.2.1: the Problem section's value pitch must describe gates as
+    chat-based with the keyword grammar. v1.3.0 → v2.1.0 said `you
+    approve in a modal`; v2.2.1 reverses.
+    (Formerly test_landing_page_problem_section_does_not_say_approve_in_chat.)"""
     text = _read(REPO_ROOT / "docs" / "index.html")
-    assert "approve in chat" not in text, (
-        "landing page still has 'approve in chat' operator-facing copy"
+    # Match the Problem section's chat keyword instruction by grepping
+    # for the `<code>APPROVE</code>` token plus chat-reply phrasing.
+    assert "chat keyword reply" in text.lower() or \
+           "<code>APPROVE</code>" in text, (
+        "v2.2.1 landing-page Problem section must describe the chat "
+        "keyword reply gate pattern."
     )
 
 
 # ---------------------------------------------------------------------------
-# Pass 11d regressions: case-insensitive sweep + B1/B2 + role + diagrams
+# v2.2.1 chat-gate documentation invariants (inverts the Pass 11d residue sweep)
 # ---------------------------------------------------------------------------
 #
-# Pass 11/11b/11c each closed a residue, but each used case-sensitive or
-# narrow phrase matching, so the next iteration of the verifier still
-# found more (`APPROVE in chat`, `operator must type APPROVE`, the
-# manifest-drafter role file, ARCHITECTURE.md Mermaid + sequence
-# diagrams). Pass 11d does a case-INSENSITIVE sweep so the family of
-# variants can't slip past anymore.
+# v1.3.0 → v2.1.0 Pass 11d swept operator-facing docs for chat-APPROVE
+# instructional residue and pinned its ABSENCE. v2.2.1 reverses the gate
+# surface after the operator-UX failure (Cowork's modal overlay hid chat
+# context at gate-decision time), so the chat keyword grammar is now the
+# DOCUMENTED contract. The parametrized residue test below is inverted:
+# it now asserts the chat-gate keyword grammar IS PRESENT in operator-
+# facing docs, and the per-file tests below assert their specific
+# chat-gate description landed.
 
 import re as _re
 
 # Operator-facing surfaces. These are the docs an operator reads BEFORE
-# running anything — they must describe modal gates, never chat-APPROVE
-# instructions. Historical mentions ("v1.3.0 retired chat-APPROVE",
-# "the chat-APPROVE ceremony was the failure mode") are allowed
-# inside CHANGELOG.md and skill SKILL.md files because they describe
-# what was retired, not how to use the current system.
+# running anything — under v2.2.1 they MUST describe the chat-gate
+# keyword grammar. The list is unchanged from Pass 11d so the inversion
+# is mechanical: same files, opposite assertion.
 _OPERATOR_FACING_FILES = (
     "README.md",
     "USER-MANUAL.md",
@@ -411,147 +536,172 @@ _OPERATOR_FACING_FILES = (
     "skills/pipeline-init/references/pipeline-payload/pipelines/roles/manifest-drafter.md",
 )
 
-# Pattern family for the retired chat-APPROVE ceremony. Each pattern is
-# matched case-insensitively. The regex is intentionally narrow — it
-# matches operator INSTRUCTIONS (imperatives or descriptions of what
-# the operator does today), not historical descriptions of what v1.3.0
-# retired.
-_INSTRUCTIONAL_CHAT_APPROVE_PATTERNS = (
-    # "APPROVE in chat" / "approve in chat" / etc.
-    _re.compile(r"\bapprove\s+in\s+chat\b", _re.IGNORECASE),
-    # "chat APPROVE" / "chat-APPROVE" as a noun describing the action.
-    # The historical mentions in CHANGELOG / SKILL.md describe what was
-    # retired, so they're scoped out of this test's file list.
-    _re.compile(r"\bchat[- ]message\s+APPROVE\b", _re.IGNORECASE),
-    # "Reply APPROVE" / "reply with APPROVE" as instructions.
-    _re.compile(r"\breply\s+(?:with\s+)?`?APPROVE`?\s+(?:in\s+chat|to\b)", _re.IGNORECASE),
-    # "type APPROVE" as an instruction.
-    _re.compile(r"\btype\s+`?APPROVE`?\b", _re.IGNORECASE),
-    # "operator must type APPROVE" as a definition.
-    _re.compile(r"\boperator\s+must\s+type\s+APPROVE\b", _re.IGNORECASE),
-    # "you review YAML in chat and APPROVE" as a procedure.
-    _re.compile(r"\bin\s+chat\s+and\s+APPROVE\b", _re.IGNORECASE),
+
+# v2.2.1 chat-gate signature patterns. Each pattern matches a phrasing
+# that signals the file describes chat-based gates (not modals). At
+# least ONE must appear in every operator-facing file.
+_CHAT_GATE_SIGNATURE_PATTERNS = (
+    # The explicit chat-keyword instruction.
+    _re.compile(r"\bchat[- ]gate\b", _re.IGNORECASE),
+    # The keyword grammar reference.
+    _re.compile(r"\bAPPROVE\s*/\s*REVISE", _re.IGNORECASE),
+    # The deterministic first-token parsing description.
+    _re.compile(r"\bfirst\s+non-whitespace\s+token\b", _re.IGNORECASE),
+    # The literal "reply APPROVE" chat instruction (v2.2.1 chat
+    # ceremony reintroduced with structured keyword grammar).
+    _re.compile(r"\breply\s+(?:with\s+)?`?APPROVE`?\b", _re.IGNORECASE),
+    # The chat APPROVE label used on the landing page stage-flow.
+    _re.compile(r"\bchat\s+APPROVE\b", _re.IGNORECASE),
+    # The chat keyword reply pattern named on the landing page.
+    _re.compile(r"\bchat\s+keyword\s+reply\b", _re.IGNORECASE),
 )
-
-
-# Surrounding-line tokens that mark a match as HISTORICAL (allowed).
-# The patterns above are imperatives or procedural descriptions, but
-# the same phrasing legitimately appears in lines that EXPLAIN what
-# v1.3.0 retired — those are honest history, not operator instructions.
-_HISTORY_MARKERS = (
-    "retired",
-    "v1.3.0 replaced",
-    "v0.5.x",
-    "ceremony",  # "the chat-APPROVE ceremony was the failure mode"
-    "no longer",
-    "previously",
-    "pre-pass-",
-    "was retired",
-    "was wrong",
-    "now wrong",
-)
-
-
-def _is_historical_line(line: str) -> bool:
-    """Return True if the line describes the retired ceremony rather
-    than instructing the operator to use it. The test scoping is
-    intentional: historical mentions ARE allowed in operator-facing
-    docs (they explain why the modal exists), and only instructional
-    or procedural uses count as residue."""
-    lowered = line.lower()
-    return any(marker in lowered for marker in _HISTORY_MARKERS)
 
 
 @pytest.mark.parametrize("filename", _OPERATOR_FACING_FILES)
 def test_no_chat_approve_instructional_residue(filename: str) -> None:
-    """Pass 11d case-insensitive sweep. Operator-facing docs must not
-    instruct the operator to APPROVE via chat. Three prior passes
-    (11, 11b, 11c) closed residues one phrasing at a time; this test
-    catches the family with a case-insensitive regex sweep so the
-    next variant can't sneak in. Historical mentions (lines containing
-    "retired" / "v1.3.0 replaced" / "ceremony" etc.) are intentionally
-    allowed — they describe what was retired, not what to do now."""
+    """v2.2.1: operator-facing docs MUST instruct the chat-gate pattern
+    (or describe it). The Pass 11d test pinned its absence; v2.2.1
+    inverts to pin its presence. The test name is kept stable so test-
+    selection patterns in CI don't need updating, but the docstring and
+    the assertion reflect the v2.2.1 inversion. Pre-v2.2.1 (v1.3.0 →
+    v2.1.0), the file was supposed to describe modal gates; v2.2.1
+    requires chat gates."""
     text = _read(REPO_ROOT / filename)
-    lines = text.splitlines()
-    found: list[str] = []
-    for pattern in _INSTRUCTIONAL_CHAT_APPROVE_PATTERNS:
-        for match in pattern.finditer(text):
-            line_no = text[: match.start()].count("\n") + 1
-            line_text = lines[line_no - 1] if line_no - 1 < len(lines) else ""
-            if _is_historical_line(line_text):
-                continue  # honest history; not an instruction
-            found.append(f"  {filename}:{line_no} → {match.group(0)!r}")
-    assert not found, (
-        f"{filename} contains operator-instructional chat-APPROVE residue:\n"
-        + "\n".join(found)
-        + "\n\nThese should describe the modal gate (`AskUserQuestion`), not "
-        "the retired v0.5.x chat ceremony. v1.3.0 retired chat-APPROVE; "
-        "v2.0 keeps the modal flow. (Lines mentioning 'retired' / 'v0.5.x' / "
-        "'ceremony' are scoped out — they're honest history.)"
+    matched_patterns: list[str] = []
+    for pattern in _CHAT_GATE_SIGNATURE_PATTERNS:
+        if pattern.search(text):
+            matched_patterns.append(pattern.pattern)
+    assert matched_patterns, (
+        f"{filename} does not describe v2.2.1 chat-based gates. At least "
+        f"one of the chat-gate signature patterns must appear:\n  "
+        + "\n  ".join(p.pattern for p in _CHAT_GATE_SIGNATURE_PATTERNS)
+        + "\n\nv2.2.1 reverses the v1.3.0 → v2.1.0 modal-gate experiment "
+        "after the operator-UX failure where Cowork's modal overlay hid "
+        "chat context at gate-decision time. Operator-facing docs must "
+        "describe the chat keyword grammar (APPROVE / REVISE / REPLAN / "
+        "BLOCK / VIEW) and deterministic first-token parsing."
     )
 
 
-def test_readme_tagline_describes_modal():
-    """B1 from end-sprint audit-lite verifier: README.md:5 used to say
-    'asks you to APPROVE in chat'. Must describe the modal."""
+def test_readme_tagline_describes_chat_gates():
+    """v2.2.1: README tagline must describe chat-based gates with the
+    keyword grammar. v1.3.0 → v2.1.0 B1 audit required `AskUserQuestion`
+    in the tagline; v2.2.1 reverses to chat gates.
+    (Formerly test_readme_tagline_describes_modal.)"""
     text = _read(REPO_ROOT / "README.md")
-    assert "APPROVE in chat" not in text  # case-sensitive check for the specific phrase
-    assert "AskUserQuestion" in text, "README tagline should name AskUserQuestion"
+    # The README must instruct the chat-gate pattern.
+    assert "APPROVE" in text and "chat" in text.lower(), (
+        "v2.2.1 README tagline should describe chat-based gates with the "
+        "APPROVE keyword."
+    )
+    # Sanity: the keyword grammar is named.
+    for keyword in ("APPROVE", "REVISE", "REPLAN"):
+        assert keyword in text, (
+            f"v2.2.1 README should reference the chat-gate keyword {keyword!r}"
+        )
 
 
-def test_architecture_glossary_gate_describes_modal():
-    """B2 from end-sprint audit-lite verifier: ARCHITECTURE.md:856 used
-    to say 'operator must type APPROVE'. Must describe the modal."""
+def test_architecture_glossary_gate_describes_chat():
+    """v2.2.1: ARCHITECTURE.md Glossary `Gate` entry must describe the
+    chat-based gate pattern (not the modal pattern). v1.3.0 → v2.1.0
+    required `operator clicks APPROVE / REPLAN / BLOCK` or `AskUserQuestion`;
+    v2.2.1 reverses to `operator replies` in chat.
+    (Formerly test_architecture_glossary_gate_describes_modal.)"""
     text = _read(REPO_ROOT / "ARCHITECTURE.md")
+    # The Glossary must describe the chat reply mechanism.
+    assert "operator replies" in text.lower() or "reply" in text.lower(), (
+        "v2.2.1 ARCHITECTURE.md Glossary `Gate` entry must describe the "
+        "operator's chat reply, not a modal click."
+    )
+    # The keyword grammar must appear.
+    for keyword in ("APPROVE", "REVISE", "REPLAN", "BLOCK"):
+        assert keyword in text, (
+            f"v2.2.1 ARCHITECTURE.md must reference chat-gate keyword {keyword!r}"
+        )
+    # The pre-v1.3.0 "operator must type APPROVE" idiom (which Pass 11d
+    # banned) is also banned under v2.2.1 — the v2.2.1 structured
+    # phrasing is "operator replies one of <keywords>", not the loose
+    # "must type APPROVE" wording.
     assert "operator must type APPROVE" not in text
-    # Sanity: confirm the modal description landed.
-    assert "operator clicks APPROVE / REPLAN / BLOCK" in text or \
-           "AskUserQuestion" in text
 
 
-def test_manifest_drafter_role_describes_modal():
-    """Pass 11d found that manifest-drafter.md (and its mirror) still
-    instructed the drafter that the operator 'replies APPROVE'. The
-    drafter must understand the operator clicks a modal option."""
+def test_manifest_drafter_role_describes_chat_gate():
+    """v2.2.1: manifest-drafter.md (and its mirror) must instruct the
+    drafter that the operator replies with one of the chat-gate
+    keywords (`APPROVE` / `REVISE` / `VIEW`). v1.3.0 → v2.1.0 required
+    the drafter to describe the modal click; v2.2.1 reverses to chat.
+    (Formerly test_manifest_drafter_role_describes_modal.)"""
     for path in (
         REPO_ROOT / "pipelines" / "roles" / "manifest-drafter.md",
         REPO_ROOT / "skills" / "pipeline-init" / "references" / "pipeline-payload"
         / "pipelines" / "roles" / "manifest-drafter.md",
     ):
         text = _read(path)
-        # The role file must not instruct the drafter to expect chat-text
-        # responses from the operator.
-        assert "replies `APPROVE`" not in text, (
-            f"{path.name} still says the operator replies APPROVE in chat"
+        # The role file must describe the chat-gate reply.
+        assert "reply" in text.lower() or "reply with one" in text.lower() or \
+               "replies with one" in text.lower(), (
+            f"{path.name} must describe the operator replying at the "
+            "chat gate (v2.2.1 contract)."
         )
-        # Must name the modal mechanism.
-        assert "AskUserQuestion" in text or "modal" in text.lower(), (
-            f"{path.name} must describe the modal gate"
-        )
+        # The chat-gate keyword grammar must be present.
+        for keyword in ("APPROVE", "REVISE"):
+            assert keyword in text, (
+                f"{path.name} must name the v2.2.1 chat-gate keyword "
+                f"{keyword!r}"
+            )
 
 
-def test_architecture_diagrams_describe_modal_gates():
-    """ARCHITECTURE.md Mermaid flowchart (line ~189) and sequence
-    diagram (line ~298) used to label gates as `chat-message APPROVE`.
-    Update to `modal AskUserQuestion` or equivalent so the diagram
-    matches code."""
+def test_architecture_diagrams_describe_chat_gates():
+    """v2.2.1: ARCHITECTURE.md Mermaid flowchart and sequence diagram
+    must label gates as chat (with keyword grammar). v1.3.0 → v2.1.0
+    required them to label gates as modal `AskUserQuestion`; v2.2.1
+    reverses to chat.
+    (Formerly test_architecture_diagrams_describe_modal_gates.)"""
     text = _read(REPO_ROOT / "ARCHITECTURE.md")
-    assert "chat-message APPROVE" not in text, (
-        "ARCHITECTURE.md diagram still labels gates as chat-message APPROVE"
+    # The flowchart's manifest-gate node label must reference chat.
+    # The sequence diagram's GATE 1/2/3 notes must reference chat
+    # prompt + keywords.
+    assert "chat keyword reply" in text.lower() or \
+           "chat prompt" in text.lower(), (
+        "v2.2.1 ARCHITECTURE.md diagrams must describe chat-based gates."
+    )
+    # The pre-Pass-11d "chat-message APPROVE" idiom stays banned (was a
+    # different mistake — the diagram described chat but in a way that
+    # contradicted the v1.3.0 modal contract). Under v2.2.1 the contract
+    # IS chat, so the diagram describes chat, but using the v2.2.1
+    # structured phrasing not the loose pre-Pass-11d wording.
+    assert "chat-message APPROVE" not in text
+
+
+def test_user_manual_glossary_manifest_describes_chat_gate():
+    """v2.2.1: USER-MANUAL Glossary `Manifest` entry must describe the
+    gate as a chat keyword reply (not the modal click). v1.3.0 → v2.1.0
+    banned `gated on chat APPROVE` because gates were modal; v2.2.1
+    reverses and the chat reply IS the gate.
+    (Formerly test_user_manual_glossary_manifest_uses_modal_language.)"""
+    text = _read(REPO_ROOT / "USER-MANUAL.md")
+    # Manifest glossary entry must describe the chat-gate reply.
+    assert "chat keyword reply" in text.lower() or \
+           "reply" in text.lower(), (
+        "v2.2.1 USER-MANUAL Glossary `Manifest` entry must describe the "
+        "operator's chat reply to the gate prompt."
     )
 
 
-def test_user_manual_glossary_manifest_uses_modal_language():
-    """USER-MANUAL Glossary `Manifest` entry must describe the gate as
-    a modal, not `gated on chat APPROVE`."""
+def test_user_manual_migration_section_describes_chat_gates():
+    """v2.2.1: USER-MANUAL Migration from v0.5.x must describe v2.2.1
+    chat gates (with deterministic first-token keyword parsing — the
+    v0.5.x ceremony was looser; v2.2.1 keeps the chat surface but with
+    explicit structure).
+    (Formerly test_user_manual_migration_section_describes_modal_gates.)"""
     text = _read(REPO_ROOT / "USER-MANUAL.md")
-    assert "gated on chat APPROVE" not in text
-
-
-def test_user_manual_migration_section_describes_modal_gates():
-    """USER-MANUAL Migration from v0.5.x must describe modal gates, not
-    `chat messages (APPROVE / REPLAN / BLOCK), not modal popups`."""
-    text = _read(REPO_ROOT / "USER-MANUAL.md")
+    # The Migration section must describe v2.2.1 chat gates.
+    assert "first non-whitespace token" in text.lower() or \
+           "first-token" in text.lower(), (
+        "v2.2.1 USER-MANUAL Migration must describe deterministic "
+        "first-token keyword parsing for the chat gates."
+    )
+    # The pre-v1.3.0 unstructured-chat-message phrasing must not appear.
     assert "chat messages (APPROVE / REPLAN / BLOCK), not modal popups" not in text
 
 

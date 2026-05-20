@@ -38,8 +38,8 @@ The plan is complete only when:
 - A test-writer reading only this plan can produce failing tests without consulting any other source.
 - Append `STAGE_DONE: plan` to `.agent-runs/<run-id>/run.log` as your final action. v1.2.0 hardening rule; `scripts/policy/check_stage_done.py` enforces.
 
-## Gate flow (v1.3.0)
+## Gate flow (v2.2.1)
 
-The plan stage produces plan.md. The orchestrator's plan gate is a fast modal AskUserQuestion prompt (APPROVE / REPLAN / Block). You do not need to do anything special to advance — write plan.md normally and the orchestrator handles the gate.
+The plan stage produces plan.md. The orchestrator's plan gate is a chat prompt naming the recognized keywords (`APPROVE` / `REPLAN` / `BLOCK` / `VIEW`, case-insensitive); the orchestrator parses the operator's first non-whitespace token. You do not need to do anything special to advance — write plan.md normally and the orchestrator handles the gate. v1.3.0 → v2.1.0 routed gates through modal `AskUserQuestion`; v2.2.1 reverses to chat (see CHANGELOG v2.2.1) after the operator-UX failure where Cowork's modal overlay hid chat context at gate-decision time.
 
-**If the plan reveals the manifest's definition_of_done is infeasible**, write that finding into plan.md's §Open Questions or §Risks section. The user can decide to REPLAN at the gate.
+**If the plan reveals the manifest's definition_of_done is infeasible**, write that finding into plan.md's §Open Questions or §Risks section. The operator can reply `REPLAN` at the gate to send the plan back with revisions.

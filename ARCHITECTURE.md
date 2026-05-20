@@ -99,7 +99,7 @@ All PR #5 amendments from the codex side are present:
 How the agent-pipeline-claude plugin is organized, what runs where, and which
 artifact each stage produces.
 
-**Current version: v2.0.0.** v2.0 ("heavier-hand") adds three layers on top of the v1.3.x architecture documented below — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval with bind-after-conformance, and a Mem0 cross-session memory layer — without removing any of the v1.x gates. v1.3.x replaced the chat-APPROVE ceremony with `AskUserQuestion` modal prompts (one click each) for the three human gates (manifest, plan, manager). v1.1 fixed the install/runtime adapter that v1.0.0–v1.0.2 got wrong (one layout, namespaced invocation, validating marketplace manifest, self-contained skills) without changing pipeline behavior. v1.0 rebuilt the user-facing surface around four load-bearing decisions (Cowork-first, spec-aware drafting, one slash skill, chat-native gates) while preserving every v0.5 hardening mechanism intact. This document describes the v1.x stage architecture that v2.0 still rides on top of; the v2.0 hook/memory/directive layers are detailed in the v2.0 CHANGELOG entry.
+**Current version: v2.0.0.** v2.0 ("heavier-hand") adds three layers on top of the v1.3.x architecture documented below — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval with bind-after-conformance, and a Mem0 cross-session memory layer — without removing any of the v1.x gates. v1.3.x replaced the original chat-APPROVE ceremony with `AskUserQuestion` modal prompts (one click each) for the three human gates (manifest, plan, manager); v2.2.1 reverses that experiment after the operator-UX failure (Cowork's modal overlay hid chat context at gate-decision time) and restores chat-based gates with a deterministic first-token keyword grammar (`APPROVE` / `REVISE` / `REPLAN` / `BLOCK` / `VIEW`, case-insensitive). The modal-budget hook denies every `AskUserQuestion` during an active non-drafting run. v1.1 fixed the install/runtime adapter that v1.0.0–v1.0.2 got wrong (one layout, namespaced invocation, validating marketplace manifest, self-contained skills) without changing pipeline behavior. v1.0 rebuilt the user-facing surface around four load-bearing decisions (Cowork-first, spec-aware drafting, one slash skill, chat-native gates) while preserving every v0.5 hardening mechanism intact. This document describes the v1.x stage architecture that v2.0 still rides on top of; the v2.0 hook/memory/directive layers are detailed in the v2.0 CHANGELOG entry.
 
 This document is for two audiences:
 
@@ -186,7 +186,7 @@ fresh subagent per stage.
 ```mermaid
 flowchart TB
     Start([User runs /run &quot;short description&quot;]) --> D[manifest-drafter<br/>role: pre-stage subagent<br/>reads project spec/release-plan/scope-lock]
-    D -- draft --> M[manifest gate<br/>role: human<br/>modal AskUserQuestion: APPROVE / REPLAN / BLOCK]
+    D -- draft --> M[manifest gate<br/>role: human<br/>chat keyword reply: APPROVE / REVISE / VIEW]
     M -- APPROVE --> R[research<br/>role: researcher<br/>artifact: research.md]
     R --> P[plan<br/>role: planner<br/>artifact: plan.md]
     P -- APPROVE --> TW[test-write<br/>role: test-writer<br/>artifact: failing-tests-report.md]
@@ -279,9 +279,12 @@ Two important properties of this flow:
 ## 4. The three human gates
 
 Every gate uses the same pattern: the prior stage produces an artifact,
-the orchestrator pauses, and the human types `APPROVE` or describes a
-block. There is no "approve with caveats" — caveats become a block, the
-caveats become the next manifest.
+the orchestrator prints a chat prompt with the recognized keyword grammar
+(`APPROVE` / `REVISE` / `REPLAN` / `BLOCK` / `VIEW`, case-insensitive),
+pauses, and parses the first non-whitespace token of the operator's
+reply. There is no "approve with caveats" — caveats become a `REVISE`
+or `REPLAN`, the caveats become the next manifest or plan. Anything
+unrecognized re-prints the gate prompt with a no-parse note.
 
 ```mermaid
 sequenceDiagram
@@ -295,8 +298,8 @@ sequenceDiagram
     O->>FS: write manifest.yaml skeleton
     O-->>U: drafter walks project; shows drafted manifest in chat
     U->>FS: edit manifest.yaml
-    O->>U: AskUserQuestion: APPROVE manifest? (v1.3.0+ modal; v0.5.x chat-text gate retired)
-    U->>O: APPROVE  (one click on the modal option)
+    O->>U: chat prompt: APPROVE / REVISE / VIEW (v2.2.1+ chat keyword grammar)
+    U->>O: APPROVE  (first non-whitespace token of next chat message, case-insensitive)
     O->>FS: append run.log: manifest COMPLETE
 
     Note over U,FS: GATE 2 — plan
@@ -304,7 +307,7 @@ sequenceDiagram
     A->>FS: write research.md
     O->>A: spawn planner subagent
     A->>FS: write plan.md
-    O->>U: AskUserQuestion: APPROVE plan?
+    O->>U: chat prompt: APPROVE / REPLAN / BLOCK / VIEW
     U->>O: APPROVE
     O->>FS: append run.log: plan COMPLETE
 
@@ -321,16 +324,19 @@ sequenceDiagram
     A->>FS: manager-decision.md
 
     Note over U,FS: GATE 3 — manager-decision
-    O->>U: AskUserQuestion: APPROVE manager decision?
+    O->>U: chat prompt: APPROVE / BLOCK / REPLAN / VIEW
     U->>O: APPROVE
     O->>FS: append run.log: manager COMPLETE
     O-->>U: Pipeline complete
 ```
 
-If the user types anything other than `APPROVE` at any gate, the
-orchestrator writes `BLOCKED` to `run.log` and stops. Re-invoking the
-same `/run resume <run-id>` later resumes from the next non-`COMPLETE` stage.
-The log is the resume key.
+If the user types one of the recognized keywords other than `APPROVE`
+(`REVISE` / `REPLAN` / `BLOCK`), the orchestrator routes accordingly:
+`REVISE` re-spawns the drafter, `REPLAN` re-spawns the planner,
+`BLOCK` writes `BLOCKED` to `run.log` and stops. Anything unrecognized
+re-prints the gate prompt with a no-parse note (no guessing). Re-invoking
+the same `/run resume <run-id>` later resumes from the next non-`COMPLETE`
+stage. The log is the resume key.
 
 ---
 
@@ -816,14 +822,14 @@ sequenceDiagram
     CC->>CC: spawn manifest-drafter subagent (pre-stage)
     CC->>Proj: drafter walks spec/release-plan/scope-lock/CLAUDE.md/...
     CC->>Runs: create dir; drafter writes manifest.yaml + draft-provenance.md
-    CC->>U: chat-message: drafted manifest + one-line provenance summary
-    U->>CC: APPROVE (or REPLAN with changes)
+    CC->>U: chat-message: drafted manifest + one-line provenance summary + chat gate prompt
+    U->>CC: APPROVE (or REVISE/VIEW; first non-whitespace token, case-insensitive)
 
     loop for each stage in pipeline YAML
         CC->>Runs: read run.log to find resume point
         alt human gate (plan or manager)
-            CC->>U: chat-message: stage summary + open questions
-            U->>CC: APPROVE / REPLAN <changes> / BLOCK
+            CC->>U: chat-message: stage summary + open questions + chat gate prompt
+            U->>CC: APPROVE / REPLAN <changes> / BLOCK / VIEW
         else policy stage
             CC->>Proj: bash scripts/policy/run_all.py
             note over CC,Runs: failure -> standard failure shape with remediation
@@ -852,10 +858,15 @@ sequenceDiagram
 - **Artifact** — the single named file a stage produces, written into
   `.agent-runs/<run-id>/`.
 - **Gate** — a checkpoint where the pipeline halts. Either
-  `human_approval` (operator clicks APPROVE / REPLAN / BLOCK in an
-  `AskUserQuestion` modal — v1.3.0 retired the v0.5.x "type APPROVE
-  in chat" ceremony) or implicit (a failing policy check or empty
-  artifact).
+  `human_approval` (operator replies one of `APPROVE` / `REVISE` /
+  `REPLAN` / `BLOCK` / `VIEW` in chat; the orchestrator parses the
+  first non-whitespace token of the next message, case-insensitive)
+  or implicit (a failing policy check or empty artifact). v1.3.0 → v2.1.0
+  routed gates through `AskUserQuestion` modals; v2.2.1 reverses to chat
+  with a deterministic keyword grammar after the operator-UX failure
+  (the modal overlay hid chat context at gate-decision time). The
+  modal-budget hook denies every `AskUserQuestion` during an active
+  non-drafting run.
 - **Subagent** — a fresh Claude Code agent spawned by the orchestrator
   for a single stage. Has no memory of the orchestrator's session.
 - **Run ID** — `YYYY-MM-DD-<slug>`, the directory name under

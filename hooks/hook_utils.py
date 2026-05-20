@@ -439,6 +439,120 @@ def memory_override_context(repo_root: Path, runs: list[ActiveRun]) -> str:
     return "\n".join(lines)
 
 
+# --- v2.2.1: stale plugin cache hygiene -----------------------------------
+#
+# Cowork's plugin manager updates `installed_plugins.json` to point at the
+# new version's `installPath` on upgrade, but does NOT delete the prior
+# version's cache directory. After 2-3 upgrades the cache parent
+# accumulates several MB of dead code, all of which is:
+#   - confusing during debugging ("which version is loaded?")
+#   - vulnerable to accidental repoint (manually editing
+#     installed_plugins.json to a stale version that still exists on disk)
+#   - wasted disk space (1.5-2 MB per version)
+#
+# Per Scott 2026-05-20 directive ("I don't want shit hanging around after
+# an upgrade"), the plugin self-cleans on first SessionStart after
+# install: any sibling version directory whose semver is strictly less
+# than the currently-loaded version gets removed.
+#
+# Safeguards:
+#   - Only directories whose name parses as `MAJOR.MINOR.PATCH` semver
+#     are considered (won't touch __pycache__, *.bak, etc.)
+#   - Only versions strictly LESS than current are deleted (no rollback
+#     friction during a deliberate downgrade ... well, slight friction:
+#     a downgrade requires re-install from marketplace, but the install
+#     mechanism handles that)
+#   - Never deletes the current plugin's own directory
+#   - Sanity check: cache_parent must contain the current dir as a direct
+#     child (otherwise we're not in a Cowork cache layout)
+#   - Per-dir delete failures are swallowed (best-effort; if a file is
+#     locked, the next SessionStart will try again)
+#   - Idempotent: returns [] when nothing to clean
+
+_SEMVER_DIR_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def _parse_semver(name: str) -> tuple[int, int, int] | None:
+    """Parse a directory name as `MAJOR.MINOR.PATCH`. Return tuple or None."""
+    if not _SEMVER_DIR_PATTERN.match(name):
+        return None
+    try:
+        major_s, minor_s, patch_s = name.split(".")
+        return (int(major_s), int(minor_s), int(patch_s))
+    except (ValueError, AttributeError):
+        return None
+
+
+def cleanup_stale_plugin_caches(
+    plugin_root: Path | None = None,
+) -> list[str]:
+    """v2.2.1: delete cache directories of prior plugin versions.
+
+    Called from `handle_session_start` once per session (idempotent).
+    See module-level comment block above for design rationale.
+
+    Args:
+        plugin_root: optional override for testing. Defaults to the
+                     directory one level above this file's parent (since
+                     hook_utils.py lives in `<plugin_root>/hooks/`).
+
+    Returns:
+        List of deleted directory names (e.g. `["2.0.0", "2.1.0"]`),
+        sorted by version ascending. Empty list when nothing to clean.
+    """
+    import shutil
+    if plugin_root is None:
+        try:
+            plugin_root = Path(__file__).resolve().parents[1]
+        except (OSError, IndexError):
+            return []
+    current_name = plugin_root.name
+    current_semver = _parse_semver(current_name)
+    if current_semver is None:
+        # Not running from a versioned cache dir (likely a dev checkout
+        # like `agent-pipeline-claude-review/` or a test fixture).
+        # Refuse to touch anything.
+        return []
+    cache_parent = plugin_root.parent
+    # Sanity: the current dir must exist under cache_parent (i.e. we're
+    # in a real Cowork cache layout, not some symlinked test setup).
+    try:
+        if not (cache_parent / current_name).is_dir():
+            return []
+    except OSError:
+        return []
+    deleted: list[str] = []
+    try:
+        siblings = sorted(cache_parent.iterdir())
+    except OSError:
+        return []
+    for sibling in siblings:
+        if sibling.name == current_name:
+            continue
+        try:
+            if not sibling.is_dir():
+                continue
+        except OSError:
+            continue
+        sibling_semver = _parse_semver(sibling.name)
+        if sibling_semver is None:
+            # Not a versioned dir (e.g. __pycache__, tmp files). Skip.
+            continue
+        if sibling_semver >= current_semver:
+            # Same or higher version: shouldn't normally happen, but if
+            # it does (e.g. an aborted upgrade), don't delete it.
+            continue
+        try:
+            shutil.rmtree(sibling, ignore_errors=False)
+            deleted.append(sibling.name)
+        except OSError:
+            # Best-effort: a locked file or permission error leaves the
+            # dir for the next SessionStart to retry. Don't crash the
+            # hook over hygiene.
+            continue
+    return deleted
+
+
 def stale_skill_context(prompt: str) -> str:
     lowered = prompt.lower()
     hits = []
@@ -723,58 +837,45 @@ def stage_artifact_format_decision(
 def modal_budget_decision(
     event: dict[str, Any], runs: list[ActiveRun]
 ) -> dict[str, Any] | None:
-    """Return a deny payload if the AskUserQuestion call violates the budget.
+    """v2.2.1: Deny ALL ``AskUserQuestion`` during active non-drafting runs.
 
-    Permits the modal when:
+    v2.2.1 removed modal gates entirely (the operator UX failed -- Cowork's
+    modal overlay hides the chat context needed at gate-decision time).
+    Gates are now chat-based with deterministic first-token keyword
+    parsing. Therefore: there are NO legitimate ``AskUserQuestion`` calls
+    during an active non-drafting pipeline run. The modal-budget hook
+    denies every one with ``MODAL_BUDGET_EXCEEDED`` and points the
+    orchestrator at the chat-based gate / adopt-and-proceed pattern.
+
+    Permits the modal only when:
       - no active non-drafting run exists (operator ad-hoc use is fine)
-      - run is mid-intake (drafting bridge state)
-      - current_stage matches a declared `gate: human_approval` stage in
-        the pipeline yaml
-      - the pipeline yaml can't be resolved (fail open, never on uncertainty)
+      - all active runs are drafting (intake bridge state -- the operator
+        is mid-draft and can use modals for intake clarifications)
 
-    Denies otherwise with a structured reason naming the budget rule and
-    pointing at the adopt-and-proceed alternative.
+    Pre-v2.2.1 behavior: permitted modals at declared ``gate:
+    human_approval`` stages (manifest, plan, manager). v2.2.1 removes the
+    gate-stage exception because gates are no longer modal.
     """
     tool_name = event.get("tool_name") or ""
     if tool_name != "AskUserQuestion":
         return None
-    # No active run, or all runs are drafting: bypass budget.
     non_drafting = [r for r in runs if not r.is_drafting]
     if not non_drafting:
-        return None
-    # Use the first active run as the budget authority (matches the
-    # rest of the codebase's "primary run" convention).
-    run = non_drafting[0]
-    yaml_path = _pipeline_yaml_for_run(run)
-    if yaml_path is None:
-        return None  # fail open when we can't resolve the pipeline
-    gate_stages = _gate_stages_from_yaml(yaml_path)
-    if not gate_stages:
-        return None  # pipeline declares no human gates, nothing to enforce
-    current_stage = (run.fields.get("current_stage") or "").strip()
-    # Accept current_stage matches OR last_completed_gate matches OR
-    # current_stage is a "_done"/"_drafted" suffix of a gate stage,
-    # which is the orchestrator's bookkeeping convention when a gate
-    # has just fired and the run state hasn't advanced yet.
-    if current_stage in gate_stages:
-        return None
-    last_completed = (run.fields.get("last_completed_gate") or "").strip()
-    if last_completed and last_completed in gate_stages and current_stage in {"", "(unknown)"}:
-        return None
-    sorted_gates = sorted(gate_stages)
+        return None  # no active run, or all drafting
     reason = (
-        "MODAL_BUDGET_EXCEEDED: this run's pipeline declares modal gates "
-        f"only at stages {sorted_gates}; current_stage='{current_stage}' is "
-        "not one of them. v2.1.0 hook enforces the v1.3.0 design that "
-        "extra inter-gate modals are the failure mode AskUserQuestion gates "
-        "were designed to eliminate. Re-evaluate: (a) if you have a "
-        "researcher recommendation, ADOPT it, record in "
-        "director-decisions.md, narrate in chat, proceed; (b) if the "
-        "decision is genuinely outside scope (forbidden zone, irreversible "
-        "without prior authorization), use BLOCK or REPLAN at the next "
-        "mandated gate instead of inserting a modal here; (c) if this "
-        "modal IS the mandated gate, update active-control-state.md "
-        "current_stage to the gate-stage name before firing."
+        "MODAL_BUDGET_EXCEEDED: v2.2.1 removed AskUserQuestion modals from "
+        "pipeline gates because the Cowork modal overlay hides chat context "
+        "the operator needs at gate-decision time. There are NO legitimate "
+        "modal calls during an active non-drafting pipeline run. "
+        "Re-evaluate: (a) if you are at a manifest/plan/manager gate, print "
+        "the structured chat gate prompt from skills/run/references/run.md "
+        "Step 6/8/9 and wait for the operator to reply with the first-token "
+        "keyword (APPROVE / REVISE / REPLAN / BLOCK / VIEW); (b) if you have "
+        "a researcher/planner/critic recommendation that is not a gate "
+        "decision, ADOPT it, record in director-decisions.md, narrate one "
+        "line in chat, proceed (per the Adopt-and-proceed section of run.md); "
+        "(c) if the decision is genuinely outside scope, surface BLOCK/REPLAN "
+        "at the next mandated gate via chat -- not via modal."
     )
     return {
         "hookSpecificOutput": {
