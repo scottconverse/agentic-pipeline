@@ -7,6 +7,75 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — SessionStart memory-rule override block (`pipelines/memory-scope-allowlist.yaml`)
+
+Closes the proximate cause of the v2.0.x "modal pumping" failure mode: operator-layer memory rules (notably `feedback_no_unilateral_product_decisions.md`) are loaded into every Claude Code session before the LLM's first turn. When those rules conflict with the pipeline's v1.3.0 modal-eliminating design, the LLM reads both and lets the older / more conservative rule win, manufacturing modals between gates.
+
+Fix: SessionStart hook now emits an `additionalContext` override block when (a) an active non-drafting pipeline run exists AND (b) `pipelines/memory-scope-allowlist.yaml` lists memory files that resolve in the user's memory directory. The block tells the LLM that the listed rules are SUSPENDED for the duration of the run.
+
+The override block does not modify the memory files themselves (Claude Code loads them earlier in the context window and the plugin can't unload them). It takes precedence by appearing later in the context, by referencing the v2.1.0 modal-budget hook and v2.2.0 policy-recheck hook as mechanical backstops, and by the operator-side scope clause added to the affected memory file.
+
+Allowlist resolution order:
+1. `<repo_root>/.pipelines/memory-scope-allowlist.yaml` (project-local override)
+2. `<plugin_root>/pipelines/memory-scope-allowlist.yaml` (canonical shipped copy)
+
+User-memory file resolution order:
+1. `$CLAUDE_USER_MEMORY_DIR/<filename>` (operator override / test hook)
+2. `~/.claude/projects/*/memory/<filename>` (Claude Code's per-workspace convention)
+
+Initial allowlist:
+- `feedback_no_unilateral_product_decisions.md` — suspended because pipeline runs use ADOPT-default per `skills/run/references/run.md` "Adopt-and-proceed (v2.1.0)"; the pipeline's declared gates ARE the ask-or-decide policy
+
+Operator-side change (paired with the in-repo work):
+- `~/.claude/projects/C--Users-scott-OneDrive-Desktop-Claude/memory/feedback_no_unilateral_product_decisions.md` now carries `applies_to: ad-hoc` frontmatter and a top-of-body block explaining that the rule does not apply during active pipeline runs. This is belt-and-suspenders alongside the SessionStart override: even an operator reading the file directly sees the scope clause.
+
+- New: `pipelines/memory-scope-allowlist.yaml` (canonical list of suspended-during-pipeline-runs memory files)
+- New: `hook_utils.memory_override_context` (SessionStart block generator)
+- New: `hook_utils._memory_override_allowlist_path` (allowlist resolver)
+- New: `hook_utils._parse_memory_override_allowlist` (line-based YAML parser; same pattern as `_gate_stages_from_yaml`)
+- New: `hook_utils._user_memory_search_roots` and `_resolve_user_memory_file` (memory directory discovery)
+- Updated: `hook_runner.handle_session_start` concatenates the override block with the existing `session_context`
+- 18 new tests in `tests/test_session_start_memory_override.py` covering parser, resolver, integration with `handle_session_start`, drafting-only suppression, and a canonical-allowlist-content pin
+
+### Added — hook-acknowledgement enforcement (`PreToolUse` + `PostToolUse`)
+
+Closes the v2.0.x "noted, continuing" failure mode where contract-artifact-touched warnings were acknowledged conversationally and immediately ignored. The hook now forces the orchestrator to actually re-run policy checks before any further write or release operation, instead of just claiming it considered them.
+
+Mechanism: a sidecar file `.agent-runs/<run-id>/pending-policy-recheck.txt` lists outstanding recheck commands, one per line. PreToolUse denies `Write`/`Edit`/`MultiEdit`/`NotebookEdit` and non-recheck `Bash` while the sidecar is non-empty. PostToolUse appends on contract-artifact write success and pops on recheck Bash success. Read-only tools (`Read`, `Grep`, `Glob`) get a budget of 3 calls between sidecar appends and the mandatory recheck.
+
+Mapping contract artifact → required recheck:
+- `manifest.yaml` → `python scripts/policy/check_manifest_immutable.py --check --run <id>`
+- `scope-lock.yaml` → `python scripts/policy/check_scope_lock.py --run <id>`
+- `directive.yaml` → `python scripts/policy/check_directive_conformance.py --run <id>`
+
+`python scripts/policy/run_all.py --run <id>` is the umbrella runner — satisfies any pending line and clears the whole sidecar in one shot.
+
+`active-control-state.md` is in the contract-artifact name set for the warn-level signal but is mutated by the orchestrator during every stage transition — it is NOT an immutable contract and does NOT require a recheck. Only the immutable trio triggers the obligation.
+
+- New: `hook_utils.policy_recheck_decision` (PreToolUse deny path)
+- New: `hook_utils.record_pending_recheck_for_write` (PostToolUse append)
+- New: `hook_utils.pop_pending_recheck_on_bash_success` (PostToolUse pop)
+- New: `hook_utils._bash_matches_recheck` (script-name match helper)
+- New constants: `_REQUIRED_RECHECK_FOR_CONTRACT_NAME`, `_RECHECK_SCRIPT_NAMES`, `_MAX_READ_ONLY_BEFORE_RECHECK = 3`, `_PENDING_RECHECK_SIDECAR`, `_PENDING_RECHECK_COUNTER`
+- Updated: `hook_runner.handle_pre_tool_use` calls `policy_recheck_decision` before `modal_budget_decision`
+- Updated: `hook_runner.handle_post_tool_use` calls `record_pending_recheck_for_write` and `pop_pending_recheck_on_bash_success` on tool success
+- 25 new tests in `tests/test_hook_ack_enforcement.py` covering record, allow, deny, pop, budget, drafting, idempotency, AskUserQuestion delegation to modal_budget, run_all umbrella
+
+Fail-open paths: no active run, all runs in drafting state, no pending entries on any active run. The deny only fires when the system is genuinely in unknown policy state and the operator has not yet cleared it.
+
+### Fixed — path-aware contract-artifact detection extended to `tool_failure_context`
+
+The v2.1.0 release fixed the contract-artifact false-positive class in `classify_tool_risk` but `tool_failure_context` was missed — it still used the substring-only check that fired on any Edit/Write whose `tool_input` (JSON-dumped) contained `manifest.yaml` / `scope-lock.yaml` / `directive.yaml` as string literals. Editing `hooks/hook_utils.py` itself reliably tripped the warning, exactly the wallpaper-warning failure mode the v2.1.0 fix was supposed to prevent.
+
+`tool_failure_context` now uses the same path-aware `_is_contract_artifact_write` detector. This closes the last remaining substring-only check in production code.
+
+- Updated: `hook_utils.tool_failure_context` swaps substring check for `_is_contract_artifact_write(event, [])`
+- Updated: 1 test in `tests/test_hooks.py` sets explicit `tool_name: "Write"` + uses run-dir-anchored manifest path (the test was implicitly relying on the loose pre-v2.1.0 substring behavior)
+- 3 new regression-pin tests in `tests/test_hook_ack_enforcement.py`:
+  - `test_tool_failure_context_does_not_false_positive_on_edit_content` (the v2.2.0 fix)
+  - `test_tool_failure_context_still_warns_on_real_contract_write` (positive case)
+  - `test_tool_failure_context_does_not_warn_on_cat_manifest` (read-only suppression)
+
 ## [2.1.0] — 2026-05-19
 
 **Autonomy hardening.** Closes five structural gaps that v2.0.x exposed in the github-cleanup-2026-05-18 + python-311-honesty sessions. The framework's autonomy contract was systematically circumvented by orchestrator-manufactured modals, freeform stage-artifact verdicts that defeated auto-promote, and template-mismatch policy failures on multi-repo-admin project shapes. v2.1.0 makes the contract mechanical.

@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+# v2.2.0 memory-rule scope allowlist.
+#
+# Memory files whose `applies_to: ad-hoc` semantics should be SUSPENDED
+# during an active /agent-pipeline-claude:run. These are operator-layer
+# memory rules that conflict with the pipeline's v1.3.0 modal-eliminating
+# design -- most notably the "ask before deciding" pattern.
+#
+# The SessionStart hook (hooks/hook_runner.py:handle_session_start)
+# resolves each entry's `file` field against the user's Claude Code
+# memory directory and emits an `additionalContext` override block
+# telling the LLM to suspend each rule for the duration of the run.
+#
+# Resolution order:
+#   1. ${CLAUDE_USER_MEMORY_DIR}/<file>          (operator override)
+#   2. ~/.claude/projects/*/memory/<file>        (auto-discovery)
+#
+# Operators can extend this list as new conflicting rules surface, or
+# remove an entry to reactivate a rule's scope.
+#
+# Schema (line-based; the hook does not require pyyaml):
+#   memory_overrides:
+#     - file: <basename>
+#       reason: "<single-line quoted string>"
+
+memory_overrides:
+  - file: feedback_no_unilateral_product_decisions.md
+    reason: "Applies to ad-hoc decisions outside autonomous pipeline runs. During an active /agent-pipeline-claude:run, the pipeline's declared gates (manifest, plan, manager) ARE the ask-or-decide policy. Research-derived recommendations are adopted by default per skills/run/references/run.md Adopt-and-proceed (v2.1.0). DO NOT defer pipeline decisions to AskUserQuestion modals between gates -- the modal-budget hook will deny them."

@@ -217,6 +217,228 @@ def read_memory_handoff(run: ActiveRun) -> str:
     return "Agent Pipeline persistent memory:\n" + _truncate(text, 2400)
 
 
+# --- v2.2.0: memory-rule scope override ----------------------------------
+#
+# Closes the proximate cause of the v2.0.x "modal pumping" failure mode:
+# operator-layer memory rules (notably feedback_no_unilateral_product_
+# decisions.md) get loaded into every Claude Code session BEFORE the LLM's
+# first turn. When those rules conflict with the pipeline's v1.3.0
+# modal-eliminating design, the LLM reads both and lets the older / more
+# conservative one win, manufacturing modals between gates.
+#
+# Fix: SessionStart hook emits an additionalContext override block when
+# (a) an active non-drafting pipeline run exists AND
+# (b) pipelines/memory-scope-allowlist.yaml lists memory files that
+#     resolve in the user's memory directory.
+# The block tells the LLM that the listed rules are suspended for the
+# duration of the run. It does not modify the memory files themselves
+# (the harness loads them earlier and we can't unload), but the override
+# takes precedence in the LLM's reading order.
+#
+# Backstop: the v2.2.0 modal-budget hook will mechanically deny any
+# AskUserQuestion fired outside the declared gates, even if the LLM
+# ignores this framing context.
+
+_MEMORY_OVERRIDE_ALLOWLIST_FILENAME = "memory-scope-allowlist.yaml"
+
+
+def _memory_override_allowlist_path(repo_root: Path) -> Path | None:
+    """Locate the allowlist YAML.
+
+    Resolution order:
+      1. ``<repo_root>/.pipelines/memory-scope-allowlist.yaml`` -- the
+         project's scaffolded copy (per the consumer-project layout).
+      2. ``<plugin_root>/pipelines/memory-scope-allowlist.yaml`` -- the
+         plugin source's canonical copy.
+    Returns the first that exists, or None.
+    """
+    candidates = [
+        repo_root / ".pipelines" / _MEMORY_OVERRIDE_ALLOWLIST_FILENAME,
+        Path(__file__).resolve().parents[1] / "pipelines" / _MEMORY_OVERRIDE_ALLOWLIST_FILENAME,
+    ]
+    for c in candidates:
+        try:
+            if c.exists() and c.is_file():
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def _parse_memory_override_allowlist(yaml_path: Path) -> list[dict[str, str]]:
+    """Tiny line-based parser for the memory-scope-allowlist schema.
+
+    Expected shape:
+
+        memory_overrides:
+          - file: <basename>
+            reason: "<single-line quoted string>"
+          - file: ...
+            reason: ...
+
+    Returns a list of {"file": str, "reason": str} dicts. Tolerates
+    comments, blank lines, and minor whitespace variation. Designed to
+    parse the restricted schema without pulling in pyyaml -- the same
+    pattern used elsewhere in this module
+    (``_gate_stages_from_yaml``).
+    """
+    entries: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    try:
+        text = yaml_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    in_memory_overrides = False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Top-level key
+        if stripped.startswith("memory_overrides:"):
+            in_memory_overrides = True
+            continue
+        if not in_memory_overrides:
+            continue
+        # New entry: `- file: <name>` on a single line, or `- ` then
+        # `file:` on the next line. We support both shapes.
+        if stripped.startswith("- "):
+            if current is not None:
+                if current.get("file"):
+                    entries.append(current)
+            current = {}
+            rest = stripped[2:].strip()
+            if rest.startswith("file:"):
+                current["file"] = rest.split(":", 1)[1].strip().strip('"').strip("'")
+            continue
+        if current is None:
+            continue
+        if stripped.startswith("file:"):
+            current["file"] = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+            continue
+        if stripped.startswith("reason:"):
+            rest = stripped[len("reason:"):].strip()
+            # Strip a single layer of surrounding quotes; tolerate
+            # bare strings too.
+            if (rest.startswith('"') and rest.endswith('"')) or (
+                rest.startswith("'") and rest.endswith("'")
+            ):
+                rest = rest[1:-1]
+            current["reason"] = rest
+            continue
+    if current is not None and current.get("file"):
+        entries.append(current)
+    return entries
+
+
+def _user_memory_search_roots() -> list[Path]:
+    """Return candidate user-memory directories to search.
+
+    1. ``$CLAUDE_USER_MEMORY_DIR`` if set (operator override + test
+       hook).
+    2. Every ``~/.claude/projects/<encoded>/memory/`` directory that
+       exists (Claude Code's convention for per-workspace memory).
+    """
+    roots: list[Path] = []
+    env_hint = os.environ.get("CLAUDE_USER_MEMORY_DIR")
+    if env_hint:
+        try:
+            roots.append(Path(env_hint).expanduser().resolve())
+        except (OSError, ValueError):
+            pass
+    try:
+        base = Path.home() / ".claude" / "projects"
+        if base.exists():
+            for proj in sorted(base.iterdir()):
+                mem = proj / "memory"
+                try:
+                    if mem.is_dir():
+                        roots.append(mem.resolve())
+                except OSError:
+                    continue
+    except (OSError, RuntimeError):
+        pass
+    return roots
+
+
+def _resolve_user_memory_file(filename: str) -> Path | None:
+    """Find a user memory file by basename. Returns first existing match."""
+    if not filename:
+        return None
+    for root in _user_memory_search_roots():
+        candidate = root / filename
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def memory_override_context(repo_root: Path, runs: list[ActiveRun]) -> str:
+    """v2.2.0 SessionStart memory-rule override block.
+
+    Returns an ``additionalContext`` string telling the LLM which
+    user-memory rules are suspended for the active run, or ``""`` if
+    no override applies (no active run, all drafting, allowlist
+    missing/empty, or no listed files resolve in the user's memory
+    dir).
+
+    The block is concatenated with ``session_context`` in
+    ``handle_session_start``. It does not replace the memory files;
+    Claude Code loads those earlier in the context window. The
+    override takes precedence by virtue of appearing later (LLM
+    instruction-following convention) and by virtue of the v2.2.0
+    modal-budget hook denying any modal that violates the suspension.
+    """
+    non_drafting = [r for r in runs if not r.is_drafting]
+    if not non_drafting:
+        return ""
+    allowlist_path = _memory_override_allowlist_path(repo_root)
+    if allowlist_path is None:
+        return ""
+    entries = _parse_memory_override_allowlist(allowlist_path)
+    if not entries:
+        return ""
+    resolved: list[tuple[str, Path, str]] = []
+    for entry in entries:
+        filename = entry.get("file") or ""
+        if not filename:
+            continue
+        path = _resolve_user_memory_file(filename)
+        if path is None:
+            continue
+        resolved.append((filename, path, entry.get("reason", "")))
+    if not resolved:
+        return ""
+    run = non_drafting[0]
+    lines = [
+        "=== MEMORY OVERRIDES FOR THIS PIPELINE RUN ===",
+        f"Active run: {run.run_id}",
+        "",
+        "The following user-memory rules are SUSPENDED for the duration of",
+        "this /agent-pipeline-claude:run. They appear earlier in your",
+        "context window because Claude Code loads memory files into every",
+        "session. The override below takes precedence for this run only.",
+        "",
+    ]
+    for filename, path, reason in resolved:
+        lines.append(f"- {filename}")
+        lines.append(f"  ({path})")
+        if reason:
+            lines.append(f"  reason: {reason}")
+        lines.append("")
+    lines.append(
+        "After this run ends (active-control-state.md shows active_run: "
+        "false or the run dir is absent), the rules reactivate."
+    )
+    lines.append(
+        "Backstop: the modal-budget hook (v2.1.0) and policy-recheck hook "
+        "(v2.2.0) mechanically enforce the design these overrides codify."
+    )
+    return "\n".join(lines)
+
+
 def stale_skill_context(prompt: str) -> str:
     lowered = prompt.lower()
     hits = []
@@ -716,6 +938,349 @@ def _is_contract_artifact_write(
     return (False, None)
 
 
+# v2.2.0: hook-acknowledgement enforcement.
+#
+# When a contract artifact (manifest.yaml, scope-lock.yaml, directive.yaml)
+# is mutated, the run is in an unknown policy state. The orchestrator
+# must re-run the corresponding policy check before any further write or
+# release operation. This is the structural fix for the v2.0.x
+# "noted, continuing" failure mode where contract-artifact-touched
+# warnings were acknowledged conversationally and immediately ignored
+# without any forcing function to actually verify the post-edit policy
+# state.
+#
+# Mechanism: a sidecar file ``.agent-runs/<run-id>/pending-policy-recheck.txt``
+# lists outstanding recheck commands, one per line. PreToolUse denies
+# Write/Edit and non-recheck Bash while the sidecar is non-empty;
+# Read/Grep/Glob remain allowed up to _MAX_READ_ONLY_BEFORE_RECHECK
+# calls (tracked in a sibling counter file). PostToolUse appends on
+# contract-artifact write success and pops on recheck Bash success.
+#
+# Only manifest.yaml / scope-lock.yaml / directive.yaml trigger the
+# obligation. active-control-state.md is in _CONTRACT_ARTIFACT_NAMES
+# for the warn-level "contract artifact touched" signal but is mutated
+# by the orchestrator routinely during normal stage transitions — it is
+# not an immutable contract and does not require a recheck.
+
+_REQUIRED_RECHECK_FOR_CONTRACT_NAME: dict[str, str] = {
+    "manifest.yaml": (
+        "python scripts/policy/check_manifest_immutable.py "
+        "--check --run {run_id}"
+    ),
+    "scope-lock.yaml": (
+        "python scripts/policy/check_scope_lock.py --run {run_id}"
+    ),
+    "directive.yaml": (
+        "python scripts/policy/check_directive_conformance.py --run {run_id}"
+    ),
+}
+
+# Script names that count as a policy recheck. A Bash command satisfies
+# a pending recheck line iff it invokes one of these scripts AND the
+# script's filename also appears in that pending line. ``run_all.py``
+# is the umbrella runner and pops every pending line when it succeeds.
+_RECHECK_SCRIPT_NAMES: frozenset[str] = frozenset({
+    "check_manifest_immutable.py",
+    "check_scope_lock.py",
+    "check_directive_conformance.py",
+    "run_all.py",
+})
+
+# Maximum number of Read/Grep/Glob calls allowed between the most recent
+# contract-artifact write and the required recheck. Set low enough that
+# the obligation can't be deferred indefinitely behind "just one more
+# read" calls.
+_MAX_READ_ONLY_BEFORE_RECHECK: int = 3
+
+_PENDING_RECHECK_SIDECAR = "pending-policy-recheck.txt"
+_PENDING_RECHECK_COUNTER = "pending-policy-recheck-readcount.txt"
+
+
+def _pending_recheck_path(run: ActiveRun) -> Path:
+    return run.run_dir / _PENDING_RECHECK_SIDECAR
+
+
+def _read_pending_recheck(run: ActiveRun) -> list[str]:
+    sidecar = _pending_recheck_path(run)
+    if not sidecar.exists():
+        return []
+    try:
+        text = sidecar.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [line for line in text.splitlines() if line.strip()]
+
+
+def _write_pending_recheck(run: ActiveRun, lines: list[str]) -> None:
+    sidecar = _pending_recheck_path(run)
+    try:
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        if lines:
+            sidecar.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        elif sidecar.exists():
+            sidecar.unlink()
+    except OSError:
+        # Best-effort: a failure to update the sidecar must not crash the
+        # hook. The deny on the next non-recheck write is the backstop.
+        pass
+
+
+def _read_only_counter_path(run: ActiveRun) -> Path:
+    return run.run_dir / _PENDING_RECHECK_COUNTER
+
+
+def _read_read_only_counter(run: ActiveRun) -> int:
+    p = _read_only_counter_path(run)
+    if not p.exists():
+        return 0
+    try:
+        return int(p.read_text(encoding="utf-8").strip() or "0")
+    except (OSError, ValueError):
+        return 0
+
+
+def _set_read_only_counter(run: ActiveRun, value: int) -> None:
+    p = _read_only_counter_path(run)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(max(0, value)), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clear_read_only_counter(run: ActiveRun) -> None:
+    p = _read_only_counter_path(run)
+    if p.exists():
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def _bash_matches_recheck(command: str, pending_lines: list[str]) -> str | None:
+    """Return the pending line that a Bash command satisfies, or None.
+
+    Match logic:
+      * The command must mention one of ``_RECHECK_SCRIPT_NAMES``.
+      * That script name must also appear in at least one pending line.
+      * ``run_all.py`` is the umbrella runner; it satisfies any pending
+        line and the caller pops everything in one shot.
+    """
+    if not command or not pending_lines:
+        return None
+    invoked: str | None = None
+    for name in _RECHECK_SCRIPT_NAMES:
+        if name in command:
+            invoked = name
+            break
+    if invoked is None:
+        return None
+    if invoked == "run_all.py":
+        return pending_lines[0]
+    for line in pending_lines:
+        if invoked in line:
+            return line
+    return None
+
+
+def policy_recheck_decision(
+    event: dict[str, Any], runs: list[ActiveRun]
+) -> dict[str, Any] | None:
+    """PreToolUse hook: enforce the hook-acknowledgement contract.
+
+    Fires when any non-drafting active run has a non-empty
+    ``pending-policy-recheck.txt`` sidecar. Allowed despite the sidecar:
+
+      * Bash that matches a pending recheck command.
+      * Read/Grep/Glob (and other read-only tools), up to
+        ``_MAX_READ_ONLY_BEFORE_RECHECK`` calls since the most recent
+        sidecar append. Once the budget is exhausted, read-only tools
+        are also denied.
+      * ``AskUserQuestion`` is delegated to ``modal_budget_decision``;
+        we do not second-guess modal semantics here.
+
+    Everything else is denied with ``POLICY_RECHECK_REQUIRED`` and a
+    structured reason naming the next required recheck command.
+
+    Fail-open: no active run, all runs in drafting state, no pending
+    entries on any active run. The deny only fires when the system is
+    genuinely in unknown policy state and the operator has not yet
+    cleared it.
+    """
+    tool_name = event.get("tool_name") or ""
+    if tool_name == "AskUserQuestion":
+        return None
+    pending_run: ActiveRun | None = None
+    pending_lines: list[str] = []
+    for run in runs:
+        if run.is_drafting:
+            continue
+        lines = _read_pending_recheck(run)
+        if lines:
+            pending_run = run
+            pending_lines = lines
+            break
+    if pending_run is None:
+        return None
+    next_recheck = pending_lines[0]
+    if tool_name == "Bash":
+        command = tool_command(event)
+        if _bash_matches_recheck(command, pending_lines):
+            return None
+        reason = (
+            "POLICY_RECHECK_REQUIRED: a pipeline contract artifact was "
+            "modified and the policy state must be re-verified before "
+            "any further write or release operation. Run this next: "
+            "`" + next_recheck + "` "
+            "(" + str(len(pending_lines)) + " pending in "
+            + _PENDING_RECHECK_SIDECAR + "). Read/Grep/Glob remain "
+            "allowed up to " + str(_MAX_READ_ONLY_BEFORE_RECHECK) + " "
+            "calls before the recheck becomes mandatory. v2.2.0 hook "
+            "enforces v1.3.0/v2.1.0 design that contract-artifact "
+            "warnings are load-bearing obligations, not advisory."
+        )
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+    if tool_name in {"Write", "Edit", "MultiEdit", "NotebookEdit"}:
+        reason = (
+            "POLICY_RECHECK_REQUIRED: a pipeline contract artifact was "
+            "modified and the policy state must be re-verified before "
+            "any further write. Run this next: `" + next_recheck + "`. "
+            "Once the recheck exits 0 the pending line is popped and "
+            "this write will be permitted."
+        )
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+    if tool_name in _READ_ONLY_TOOL_NAMES:
+        count = _read_read_only_counter(pending_run)
+        if count >= _MAX_READ_ONLY_BEFORE_RECHECK:
+            reason = (
+                "POLICY_RECHECK_REQUIRED: a pipeline contract artifact "
+                "was modified and the "
+                + str(_MAX_READ_ONLY_BEFORE_RECHECK)
+                + "-call read-only budget has been exhausted ("
+                + str(count) + " read-only ops since the sidecar was "
+                "last appended-to). Run the recheck before any further "
+                "read: `" + next_recheck + "`."
+            )
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }
+        _set_read_only_counter(pending_run, count + 1)
+        return None
+    return None
+
+
+def record_pending_recheck_for_write(
+    event: dict[str, Any], runs: list[ActiveRun]
+) -> str | None:
+    """PostToolUse hook for successful Write/Edit/MultiEdit/NotebookEdit/Bash.
+
+    If the tool call touched a contract artifact (manifest.yaml /
+    scope-lock.yaml / directive.yaml) inside an active non-drafting
+    run dir, append the required recheck command to that run's
+    ``pending-policy-recheck.txt`` sidecar.
+
+    Returns the appended (or already-present) line, or None if no
+    contract write was detected. Idempotent: does not duplicate an
+    existing pending line for the same artifact within the same run.
+    Resets the read-only counter on every append so each fresh
+    pending entry gets a fresh budget.
+    """
+    if not isinstance(event, dict):
+        return None
+    tool_name = event.get("tool_name") or ""
+    if tool_name not in {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"}:
+        return None
+    contract_touched, contract_path = _is_contract_artifact_write(event, runs)
+    if not contract_touched or contract_path is None:
+        # Bash write-redirects to contract artifacts return (True, None)
+        # because Bash command resolution is approximate. In that
+        # specific case the orchestrator should still re-verify, but
+        # we can't reliably pick the right run+contract pairing without
+        # the resolved path. Skipping is the safer default.
+        return None
+    name = contract_path.name
+    cmd_template = _REQUIRED_RECHECK_FOR_CONTRACT_NAME.get(name)
+    if cmd_template is None:
+        return None
+    for run in runs:
+        if run.is_drafting:
+            continue
+        try:
+            contract_path.relative_to(run.run_dir.resolve())
+        except (ValueError, OSError):
+            continue
+        required = cmd_template.format(run_id=run.run_id)
+        current = _read_pending_recheck(run)
+        if required not in current:
+            current.append(required)
+            _write_pending_recheck(run, current)
+        _clear_read_only_counter(run)
+        return required
+    return None
+
+
+def pop_pending_recheck_on_bash_success(
+    event: dict[str, Any], runs: list[ActiveRun]
+) -> str | None:
+    """PostToolUse hook for Bash that succeeded.
+
+    If the command matches a pending recheck for any non-drafting
+    active run, pop that line. ``run_all.py`` pops every pending line
+    in one shot because it runs the full policy suite.
+
+    Returns the popped line (or representative line for run_all), or
+    None if no match.
+    """
+    if not isinstance(event, dict):
+        return None
+    if (event.get("tool_name") or "") != "Bash":
+        return None
+    response = event.get("tool_response") or {}
+    if isinstance(response, dict):
+        exit_code = response.get("exit_code")
+        if exit_code not in (0, None, "0"):
+            return None
+        if response.get("success") is False:
+            return None
+    command = tool_command(event)
+    if not command:
+        return None
+    for run in runs:
+        if run.is_drafting:
+            continue
+        pending = _read_pending_recheck(run)
+        if not pending:
+            continue
+        matched = _bash_matches_recheck(command, pending)
+        if matched is None:
+            continue
+        if "run_all.py" in command:
+            _write_pending_recheck(run, [])
+        else:
+            pending.remove(matched)
+            _write_pending_recheck(run, pending)
+        if not _read_pending_recheck(run):
+            _clear_read_only_counter(run)
+        return matched
+    return None
+
+
 def permission_decision(event: dict[str, Any], runs: list[ActiveRun]) -> dict[str, Any] | None:
     severity, reasons = classify_tool_risk(event, runs)
     # Pass 12 / Cluster K: when every active run is in drafting state
@@ -785,15 +1350,22 @@ def tool_failure_context(event: dict[str, Any]) -> str:
     failed = _tool_response_failed(response)
     if failed:
         pieces.append("The last tool result appears to contain a failure. Inspect the command output, fix the root cause, and rerun the relevant verification before advancing the pipeline.")
-    command = tool_command(event).lower()
-    # Pass 10 / Cluster I: same read-vs-write distinction as
-    # classify_tool_risk — a successful `cat manifest.yaml` does not
-    # need the "re-run policy checks" prompt; only a write does.
-    if (
-        any(name in command for name in ("manifest.yaml", "scope-lock.yaml", "directive.yaml"))
-        and not _is_read_only_operation(event)
-    ):
+    # v2.2.0: path-aware contract-artifact detection, matching the
+    # v2.1.0 fix in classify_tool_risk. The pre-v2.2.0 version did a
+    # substring search on the lowercased command/content, which
+    # false-positived on every framework edit / test fixture / doc that
+    # mentioned `manifest.yaml` / `scope-lock.yaml` / `directive.yaml`
+    # by NAME -- e.g. tool_command() for a Write/Edit returns the
+    # JSON-dumped tool_input, whose new_string can legitimately
+    # contain those tokens as string literals. Using the path-aware
+    # detector here closes the last remaining substring-only check
+    # in production code (test_contract_artifact_precision.py pins
+    # the contract for classify_tool_risk; test_hook_ack_enforcement
+    # pins it for tool_failure_context).
+    contract_touched, _path = _is_contract_artifact_write(event, [])
+    if contract_touched:
         pieces.append("A pipeline contract artifact was touched. Re-run directive/scope/manifest policy checks before relying on any auto-approval.")
+    command = tool_command(event).lower()
     if "pytest" in command and failed:
         pieces.append("Tests failed. Do not mark the stage complete until pytest is green or the failing gate records a valid human stop condition.")
     return "\n".join(pieces)
