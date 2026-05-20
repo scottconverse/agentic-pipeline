@@ -337,7 +337,7 @@ If you skipped v1.0 and are upgrading directly from v0.5.x:
 - Manifest is drafted from your project's spec; you no longer hand-author 11 fields from blank.
 - All three human gates are `AskUserQuestion` modal prompts (APPROVE / REPLAN / BLOCK as labels — one click each). The v0.5.x free-form chat-APPROVE ceremony was retired in v1.3.0.
 
-Run `cd ~/.claude/plugins/marketplaces/agent-pipeline-claude && git pull && git checkout v2.1.0` to upgrade, then fully restart Cowork. See [CHANGELOG.md](CHANGELOG.md) for full migration notes.
+Run `cd ~/.claude/plugins/marketplaces/agent-pipeline-claude && git pull && git checkout v2.2.0` to upgrade, then fully restart Cowork. See [CHANGELOG.md](CHANGELOG.md) for full migration notes.
 
 ## Contributing
 

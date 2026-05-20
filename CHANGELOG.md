@@ -7,6 +7,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-05-19
+
+**Autonomy follow-through.** Closes the 2 of 6 framework hardening fixes that v2.1.0 left on the table from Scott's 2026-05-19 spec. Plus catches a same-class v2.0.x false-positive that v2.1.0's path-aware contract-artifact detection landed in `classify_tool_risk` but missed in `tool_failure_context`.
+
+**Final tag: 372 tests passing, 1 skipped (cleanroom_e2e).** 2 new test files (`test_hook_ack_enforcement.py` 25 tests, `test_session_start_memory_override.py` 18 tests), no regressions in the 329-test v2.1.0 baseline. 1 existing test in `test_hooks.py` updated to align with v2.2.0 precision contract.
+
 ### Added — SessionStart memory-rule override block (`pipelines/memory-scope-allowlist.yaml`)
 
 Closes the proximate cause of the v2.0.x "modal pumping" failure mode: operator-layer memory rules (notably `feedback_no_unilateral_product_decisions.md`) are loaded into every Claude Code session before the LLM's first turn. When those rules conflict with the pipeline's v1.3.0 modal-eliminating design, the LLM reads both and lets the older / more conservative rule win, manufacturing modals between gates.

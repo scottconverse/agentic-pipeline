@@ -3,7 +3,7 @@
       "description" : "Run multi-step Claude Code work without drift. v2.0 adds eleven Cowork lifecycle hooks, directive-contract pre-approval, persistent file-backed run memory, an MCP Mem0 cross-session layer, intake skill, scope-lock authority, DoD readiness, and a centralized stop validator. Codex stays lighter; claude takes the heavier hand.",
       "homepage" : "https://scottconverse.github.io/agent-pipeline-claude/",
       "repository" : "https://github.com/scottconverse/agent-pipeline-claude",
-      "version" : "2.1.0"
+      "version" : "2.2.0"
    },
    "name" : "agent-pipeline-claude",
    "owner" : {
@@ -34,7 +34,7 @@
          "license" : "Apache-2.0",
          "name" : "agent-pipeline-claude",
          "source" : "./",
-         "version" : "2.1.0"
+         "version" : "2.2.0"
       }
    ]
 }
