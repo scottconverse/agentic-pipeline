@@ -328,7 +328,7 @@ def test_readme_upgrade_instruction_targets_v2():
     assert "git checkout v1.1.0" not in text, (
         "README still tells operators to `git checkout v1.1.0` — stale"
     )
-    assert "git checkout v2.2.1" in text
+    assert "git checkout v2.2.2" in text
 
 
 def test_user_manual_upgrade_instruction_targets_v2():
@@ -336,7 +336,7 @@ def test_user_manual_upgrade_instruction_targets_v2():
     snippet (same instruction in both surfaces)."""
     text = _read(REPO_ROOT / "USER-MANUAL.md")
     assert "git checkout v1.1.0" not in text
-    assert "git checkout v2.2.1" in text
+    assert "git checkout v2.2.2" in text
 
 
 def test_architecture_current_version_is_v2():

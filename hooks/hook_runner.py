@@ -31,6 +31,7 @@ try:
         classify_tool_risk,
         cleanup_stale_plugin_caches,
         discover_active_runs,
+        marketplace_update_available_context,
         memory_override_context,
         modal_budget_decision,
         policy_recheck_decision,
@@ -56,6 +57,7 @@ except ModuleNotFoundError:  # pragma: no cover - package import from tests
         classify_tool_risk,
         cleanup_stale_plugin_caches,
         discover_active_runs,
+        marketplace_update_available_context,
         memory_override_context,
         modal_budget_decision,
         policy_recheck_decision,
@@ -121,20 +123,41 @@ def handle_session_start(event: dict) -> int:
     # Concatenated with session_context so a single additionalContext
     # block carries both signals.
     override = memory_override_context(root, runs)
+    # v2.2.2: emit LOUD warning when the marketplace clone has commits
+    # ahead of the installed gitCommitSha. Third-party marketplaces have
+    # auto-update OFF by default, so without this warning the operator
+    # has no in-session signal that an upgrade requires explicit action.
+    # Fires regardless of active-run state -- the upgrade gotcha applies
+    # to every session.
+    try:
+        upgrade_warning = marketplace_update_available_context()
+    except Exception:  # noqa: BLE001 - hook must never crash on the warning path
+        upgrade_warning = None
+    # Compose additionalContext: upgrade warning first (loudest signal,
+    # operator must see this above other context), then session_context
+    # (active run state), then memory override block. Each part stands
+    # alone; we join with blank-line separators.
+    parts: list[str] = []
+    if upgrade_warning:
+        parts.append(upgrade_warning)
+    if context:
+        parts.append(context)
     if override:
-        if context:
-            context = context + "\n\n" + override
-        else:
-            context = override
-    if not context:
+        parts.append(override)
+    if not parts:
         return 0
-    note_parts = ["added active run context"]
+    combined = "\n\n".join(parts)
+    note_parts: list[str] = []
+    if upgrade_warning:
+        note_parts.append("marketplace update warning emitted")
+    if context:
+        note_parts.append("added active run context")
     if override:
         note_parts.append("memory-rule overrides emitted")
-    note = "; ".join(note_parts)
+    note = "; ".join(note_parts) if note_parts else "session context emitted"
     append_hook_event(root, "SessionStart", note)
     record_hook_memory(root, "SessionStart", note)
-    return write_json(_context_payload("SessionStart", context))
+    return write_json(_context_payload("SessionStart", combined))
 
 
 def handle_user_prompt_submit(event: dict) -> int:

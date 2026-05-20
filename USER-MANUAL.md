@@ -2,10 +2,49 @@
 
 Ship multi-step Claude Code work that doesn't drift. The plugin reads your project's spec, drafts a per-run scope contract, and shows it to you in chat with a deterministic keyword gate (`APPROVE` / `REVISE` / `VIEW`). Then it runs research → plan → execute → verify → critique end-to-end with three chat-based human gates, an opt-in real-time judge, machine-checkable auto-promote, **eleven lifecycle hooks** that enforce the pipeline at runtime, **directive-contract pre-approval** for conformant runs, **persistent file-backed memory** that survives context compaction, and an **MCP Mem0 layer** for cross-session continuity.
 
-**Version:** 2.2.1
+**Version:** 2.2.2
 **License:** Apache 2.0
 
 ---
+
+## Upgrading from any prior version (READ THIS FIRST)
+
+**Third-party Claude Code marketplaces have auto-update OFF by default.** Per the [official docs](https://code.claude.com/docs/en/discover-plugins#configure-auto-updates):
+
+> Official Anthropic marketplaces have auto-update enabled by default. **Third-party and local development marketplaces have auto-update disabled by default.**
+
+The `agent-pipeline-claude` marketplace is third-party. So after each new release, you have to do ONE of these to actually receive the new version. A `git pull` on the marketplace clone + Cowork restart is NOT enough.
+
+### Option 1 — explicit install (one-time upgrade, recommended)
+
+```bash
+# Refresh the marketplace clone to the new release:
+cd ~/.claude/plugins/marketplaces/agent-pipeline-claude
+git pull
+git checkout v2.2.2
+
+# Install the new version into the cache + update installed_plugins.json:
+claude plugin install agent-pipeline-claude@agent-pipeline-claude
+```
+
+Then `/reload-plugins` in any Cowork session, or restart Cowork, to load the new hooks.
+
+### Option 2 — enable auto-update for future releases
+
+Run `/plugin` in Cowork → **Marketplaces** tab → select `agent-pipeline-claude` → **Enable auto-update**. Then restart Cowork. On every subsequent startup, Cowork refreshes the marketplace data and updates installed plugins to their latest versions. You'll see a notification prompting `/reload-plugins`.
+
+### How v2.2.2 helps if you forget
+
+The v2.2.2 SessionStart hook detects when the marketplace clone is ahead of the installed version (different `gitCommitSha` in `installed_plugins.json`) and emits a loud warning at the top of the session context with the exact install command. So even if a future operator hits this gotcha, they get an in-session reminder instead of silently running the stale version forever.
+
+---
+
+## What's new in v2.2.2 (auto-update awareness)
+
+v2.2.2 closes the v2.2.1 production gotcha. v2.2.1 shipped a SessionStart cache-hygiene hook, but the hook only fires AFTER Cowork installs the new version — and Cowork doesn't install third-party marketplace updates automatically. The plugin stayed pinned at v2.2.0 on the first operator's machine until they explicitly ran `claude plugin install`.
+
+- **SessionStart marketplace-update warning.** New `hook_utils.marketplace_update_available_context` runs `git rev-parse HEAD` against the marketplace clone, compares to the `gitCommitSha` in `installed_plugins.json`. If they differ, SessionStart emits a loud `additionalContext` block at the top of the session context naming the exact `claude plugin install` command + the auto-update toggle instructions.
+- **README + USER-MANUAL upgrade-instructions section.** Prominent "Upgrading" section at the top of both docs (this one). v2.2.1 release notes assumed `git pull` was enough — v2.2.2 fixes that documentation gap everywhere it can.
 
 ## What's new in v2.2.1 (chat-gate restoration)
 

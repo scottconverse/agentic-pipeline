@@ -7,6 +7,41 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.2.2] — 2026-05-20
+
+**v2.2.2 — auto-update awareness.** Closes the v2.2.1 production gotcha: third-party Claude Code marketplaces have auto-update OFF by default (per [docs](https://code.claude.com/docs/en/discover-plugins#configure-auto-updates)), so a `git pull && git checkout vX.Y.Z` on the marketplace clone followed by a Cowork restart does NOT install the new version. The plugin stayed pinned at the previously-installed version forever until the operator explicitly ran `claude plugin install` or toggled auto-update via the `/plugin` UI. v2.2.1 shipped a feature that depended on the new version actually loading; in production it didn't, and the feature was a no-op until the operator manually triggered install.
+
+**Test count: 425 passing, 1 skipped** (+18 over the v2.2.1 baseline of 407). One new test file: `tests/test_marketplace_update_warning.py` covering low-level helpers, the warning generator, integration with `handle_session_start`, and ordering of the warning block within `additionalContext`.
+
+### Added — SessionStart marketplace-update warning (`hook_utils.marketplace_update_available_context`)
+
+Detects the SHA skew between the marketplace clone and the installed plugin, emits a LOUD `additionalContext` block at the top of the SessionStart payload, points the operator at the exact `claude plugin install` command + the auto-update toggle path via the `/plugin` UI.
+
+Implementation:
+
+- New: `hook_utils.marketplace_update_available_context(plugin_root=None)` — returns the warning string when the marketplace clone HEAD differs from the installed `gitCommitSha`, otherwise `None`.
+- New: `hook_utils._read_installed_plugin_sha(claude_plugins_root, plugin_name, marketplace_name)` — reads `installed_plugins.json`, finds the `<plugin>@<marketplace>` entry, returns the `gitCommitSha`.
+- New: `hook_utils._read_marketplace_head_sha(marketplace_clone)` — runs `git rev-parse HEAD` in the clone with a 5-second timeout, returns the SHA.
+- Updated: `hook_runner.handle_session_start` composes `additionalContext` by concatenating (in order) the upgrade warning, the active-run context, and the memory-rule override block. The warning prepends ahead of other context so the LLM sees it first and is instructed in the body to relay it to the operator at the top of its first response.
+
+Resolution layout (silent skip if any step fails — the warning is informational, never blocks):
+
+1. `plugin_root` resolves from `Path(__file__).resolve().parents[1]`.
+2. `<claude_plugins>/cache/<marketplace>/<plugin>/<version>/` → derive `plugin_name`, `marketplace_name`, `claude_plugins_root`.
+3. Sanity: parents[2].name must equal `cache` and parents[3].name must equal `plugins`. Otherwise skip (dev checkout, fixture, non-standard layout).
+4. Open `<claude_plugins_root>/marketplaces/<marketplace_name>/` — must be a git repo.
+5. `git rev-parse HEAD` against the clone — must succeed.
+6. Look up `gitCommitSha` for `<plugin>@<marketplace>` in `installed_plugins.json`.
+7. If SHAs differ → emit warning. If they match → silent.
+
+### Added — README + USER-MANUAL "Upgrading from any prior version" section
+
+Prominent install-instructions block at the top of both docs explaining the auto-update-OFF default and the two paths to actually receive new versions. Cross-references the upstream docs at https://code.claude.com/docs/en/discover-plugins#configure-auto-updates.
+
+### Process note
+
+v2.2.1 shipped without checking the Claude Code plugin install docs. The auto-update-OFF default is documented in plain English on the discover-plugins page; the gotcha was avoidable. v2.2.2 fixes the immediate omission AND adds the structural warning so a future v2.2.x → v2.2.x+1 transition can't silently fail the same way again.
+
 ## [2.2.1] — 2026-05-20
 
 **v2.2.1 — chat-gate restoration + cache hygiene + scaffold refresh.** Reverses the v1.3.0 → v2.1.0 modal-gate experiment after the operator-UX failure: Cowork's modal overlay hid the chat context the operator needed at gate-decision time, defeating the gate's purpose. Closes the upgrade-hygiene gap where each plugin upgrade leaked 1.5-2 MB of stale cache. Closes the DR-F class structurally with a refresh helper that detects stale scaffolded policy scripts and propagates the plugin canonical on operator approval.

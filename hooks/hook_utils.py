@@ -553,6 +553,191 @@ def cleanup_stale_plugin_caches(
     return deleted
 
 
+# --- v2.2.2: loud marketplace-update-available warning -------------------
+#
+# Per the Claude Code docs (https://code.claude.com/docs/en/discover-plugins
+# #configure-auto-updates):
+#
+#   "Claude Code can automatically update marketplaces and their installed
+#    plugins at startup. Official Anthropic marketplaces have auto-update
+#    enabled by default. THIRD-PARTY AND LOCAL DEVELOPMENT MARKETPLACES
+#    HAVE AUTO-UPDATE DISABLED BY DEFAULT."
+#
+# agent-pipeline-claude is a third-party marketplace -- so after the
+# operator does `git pull && git checkout vX.Y.Z` on the marketplace
+# clone, Cowork will NOT install the new version on its own. The plugin
+# stays at the previously-installed version forever until the operator
+# explicitly runs `claude plugin install` or enables auto-update via
+# the `/plugin` UI.
+#
+# v2.2.1 shipped the cache-hygiene feature without flagging this gotcha
+# -- and the gotcha defeated the feature in practice (the v2.2.1 hooks
+# never loaded on the first user who tried to upgrade). v2.2.2 closes
+# the awareness gap by detecting the version-skew at SessionStart and
+# emitting a LOUD additionalContext block with the exact upgrade command.
+
+_INSTALLED_PLUGINS_JSON_NAME = "installed_plugins.json"
+
+
+def _read_installed_plugin_sha(
+    claude_plugins_root: Path, plugin_name: str, marketplace_name: str
+) -> str | None:
+    """Look up the installed gitCommitSha for ``<plugin>@<marketplace>``.
+
+    Reads ``<claude_plugins_root>/installed_plugins.json``. Returns the
+    SHA string, or None if the file is missing, unparseable, or doesn't
+    contain an entry for this plugin.
+    """
+    ip = claude_plugins_root / _INSTALLED_PLUGINS_JSON_NAME
+    try:
+        if not ip.is_file():
+            return None
+    except OSError:
+        return None
+    try:
+        data = json.loads(ip.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, dict):
+        return None
+    key = plugin_name + "@" + marketplace_name
+    entries = plugins.get(key)
+    if not isinstance(entries, list) or not entries:
+        return None
+    first = entries[0]
+    if not isinstance(first, dict):
+        return None
+    sha = first.get("gitCommitSha")
+    return sha if isinstance(sha, str) and sha else None
+
+
+def _read_marketplace_head_sha(marketplace_clone: Path) -> str | None:
+    """Run ``git rev-parse HEAD`` in the marketplace clone, return SHA or None.
+
+    Tolerates: missing dir, missing .git/, git not on PATH, non-zero
+    exit, timeout. All return None silently -- the warning should fail
+    quietly when the layout doesn't fit the expected Cowork shape.
+    """
+    import subprocess
+    try:
+        if not marketplace_clone.is_dir():
+            return None
+        if not (marketplace_clone / ".git").exists():
+            return None
+    except OSError:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(marketplace_clone),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha if sha else None
+
+
+def marketplace_update_available_context(
+    plugin_root: Path | None = None,
+) -> str | None:
+    """v2.2.2: detect installed-vs-marketplace SHA skew and emit a LOUD warning.
+
+    Resolves the plugin's marketplace clone via the standard Cowork
+    layout (see module-level comment block above), runs ``git rev-parse
+    HEAD`` against the clone, compares against the gitCommitSha recorded
+    in ``installed_plugins.json``. If they differ, returns a multi-line
+    additionalContext block with the exact ``claude plugin install``
+    command + auto-update toggle instructions.
+
+    Returns None (silent) when:
+      - layout resolution fails (dev checkout, fixture, unusual cache path)
+      - marketplace clone is missing or not a git repo
+      - git is unavailable / rev-parse exits non-zero
+      - installed_plugins.json is missing or unparseable
+      - the two SHAs match (we're up to date -- nothing to warn about)
+
+    Status read only -- never modifies anything.
+    """
+    if plugin_root is None:
+        try:
+            plugin_root = Path(__file__).resolve().parents[1]
+        except (OSError, IndexError):
+            return None
+    # Layout:
+    #   plugin_root        = <claude_plugins>/cache/<marketplace>/<plugin>/<version>/
+    #   plugin_root.parent = <claude_plugins>/cache/<marketplace>/<plugin>/
+    #   parents[1]         = <claude_plugins>/cache/<marketplace>/
+    #   parents[2]         = <claude_plugins>/cache/
+    #   parents[3]         = <claude_plugins>/
+    try:
+        plugin_name = plugin_root.parent.name
+        marketplace_name = plugin_root.parents[1].name
+        cache_root = plugin_root.parents[2]
+        claude_plugins_root = plugin_root.parents[3]
+    except (IndexError, AttributeError):
+        return None
+    if cache_root.name != "cache":
+        return None
+    if claude_plugins_root.name != "plugins":
+        return None
+    marketplace_clone = claude_plugins_root / "marketplaces" / marketplace_name
+    head_sha = _read_marketplace_head_sha(marketplace_clone)
+    if head_sha is None:
+        return None
+    installed_sha = _read_installed_plugin_sha(
+        claude_plugins_root, plugin_name, marketplace_name
+    )
+    if installed_sha is None:
+        return None
+    if head_sha == installed_sha:
+        return None
+    short_head = head_sha[:7]
+    short_installed = installed_sha[:7]
+    plugin_at_marketplace = plugin_name + "@" + marketplace_name
+    lines = [
+        "=== " + plugin_name.upper() + " UPDATE AVAILABLE ===",
+        "",
+        "Marketplace clone HEAD:    " + short_head + " (" + head_sha + ")",
+        "Currently installed:       " + short_installed + " (" + installed_sha + ")",
+        "",
+        "**Auto-update is OFF by default for third-party marketplaces.**",
+        "(Per https://code.claude.com/docs/en/discover-plugins#configure-auto-updates)",
+        "",
+        "Restarting Claude Code / Cowork does NOT install marketplace",
+        "updates on its own for third-party marketplaces. The " + plugin_name,
+        "plugin will keep loading the old version (" + short_installed + ")",
+        "until the operator does one of:",
+        "",
+        "**Option 1 -- install the new version explicitly (recommended one-time upgrade):**",
+        "",
+        "    claude plugin install " + plugin_at_marketplace,
+        "",
+        "**Option 2 -- enable auto-update so future releases install automatically:**",
+        "",
+        "    Run `/plugin` in Cowork -> Marketplaces tab -> select",
+        "    " + marketplace_name + " -> Enable auto-update.",
+        "    Then restart Cowork (auto-update runs at startup).",
+        "",
+        "After install, run `/reload-plugins` or restart Cowork for the new",
+        "hooks to load in your current session.",
+        "",
+        "**IMPORTANT FOR THE LLM READING THIS CONTEXT:** surface this",
+        "warning to the operator at the top of your first response. Quote",
+        "the exact `claude plugin install` command. Do not bury it. The",
+        "operator may not have realized that third-party marketplaces don't",
+        "auto-install updates -- the previous release (v2.2.1) shipped a",
+        "feature that depended on this and we hit the gotcha in production.",
+    ]
+    return "\n".join(lines)
+
+
 def stale_skill_context(prompt: str) -> str:
     lowered = prompt.lower()
     hits = []

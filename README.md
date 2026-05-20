@@ -6,7 +6,42 @@ The plugin reads your project's spec, drafts a per-run scope contract from it, a
 
 One namespaced skill. No YAML for you to hand-author.
 
-**Current release: v2.2.1** — chat-gate restoration + cache hygiene. Reverses the v1.3.0 → v2.1.0 modal-gate experiment after the operator UX failure (Cowork's modal overlay hid the chat context the operator needed at gate-decision time). Gates are now chat-based with deterministic first-token keyword parsing (`APPROVE` / `REVISE` / `REPLAN` / `BLOCK` / `VIEW`, case-insensitive). The modal-budget hook denies every `AskUserQuestion` during active non-drafting runs. Plus: auto-deletes stale plugin cache directories on session start (1.5-2 MB per old version × multiple installs adds up). [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
+**Current release: v2.2.2** — auto-update awareness. v2.2.2 closes the v2.2.1 production gotcha: third-party marketplaces have auto-update OFF by default ([Claude Code docs](https://code.claude.com/docs/en/discover-plugins#configure-auto-updates)), so a `git pull && git checkout vX.Y.Z` on the marketplace clone followed by a Cowork restart does NOT install the new version. SessionStart now detects the marketplace-vs-installed SHA skew and emits a loud `additionalContext` warning with the exact `claude plugin install` command. Plus the v2.2.1 chat-based gates + cache hygiene. [CHANGELOG](CHANGELOG.md) · [User Manual](USER-MANUAL.md) · [Architecture](ARCHITECTURE.md) · [Landing page](https://scottconverse.github.io/agent-pipeline-claude/) · [Discussions](https://github.com/scottconverse/agent-pipeline-claude/discussions)
+
+## Upgrading from any prior version (READ THIS FIRST)
+
+**Third-party Claude Code marketplaces have auto-update OFF by default.** Per the [official docs](https://code.claude.com/docs/en/discover-plugins#configure-auto-updates):
+
+> Official Anthropic marketplaces have auto-update enabled by default. **Third-party and local development marketplaces have auto-update disabled by default.**
+
+The `agent-pipeline-claude` marketplace is third-party. So after each release, you have to do ONE of these to actually receive the new version:
+
+**Option 1 — explicit install (recommended for one-time upgrade):**
+
+```bash
+# Refresh the marketplace clone:
+cd ~/.claude/plugins/marketplaces/agent-pipeline-claude
+git pull
+git checkout v2.2.2
+
+# Install the new version into the cache:
+claude plugin install agent-pipeline-claude@agent-pipeline-claude
+```
+
+Then `/reload-plugins` in any Cowork session (or restart Cowork) to load the new hooks.
+
+**Option 2 — enable auto-update once, ride future releases hands-free:**
+
+Run `/plugin` in Cowork → **Marketplaces** tab → select `agent-pipeline-claude` → **Enable auto-update**. Then restart Cowork. On every subsequent startup, Cowork refreshes the marketplace data and updates installed plugins to their latest versions; you'll see a notification prompting `/reload-plugins`.
+
+**Why this matters:** v2.2.1 shipped a feature (auto-delete stale cache dirs on SessionStart) that depended on the new version actually loading. The auto-update-OFF default defeated it in production. v2.2.2 adds a loud SessionStart warning that fires when the marketplace clone has commits ahead of the installed `gitCommitSha` — so future operators know to take action even if they don't read this README.
+
+## What's new in v2.2.2
+
+v2.2.2 closes the v2.2.1 production gotcha: third-party marketplaces have auto-update OFF by default, so the v2.2.1 release that shipped a SessionStart cache-hygiene hook didn't actually fire for any operator who relied on a Cowork restart to pull in the new version. The plugin stayed pinned at v2.2.0 until the operator explicitly ran `claude plugin install` or toggled auto-update via the `/plugin` UI.
+
+- **SessionStart marketplace-update warning.** New `hook_utils.marketplace_update_available_context` reads the marketplace clone's HEAD SHA via `git rev-parse HEAD` and compares it against the `gitCommitSha` recorded in `installed_plugins.json`. If they differ, SessionStart emits a loud `additionalContext` block at the top of the LLM's session context with the exact `claude plugin install agent-pipeline-claude@agent-pipeline-claude` command + auto-update toggle instructions + a reference to the upstream docs. Block prepends ahead of active-run context and memory-rule overrides so the LLM sees and relays it first.
+- **README + USER-MANUAL upgrade-instructions section.** Prominent "Upgrading from any prior version" section at the top of both docs explaining the auto-update-OFF default and the two paths to actually receive new versions. v2.2.1 release notes assumed `git pull` was enough; v2.2.2 makes the gotcha visible everywhere.
 
 ## What's new in v2.2.1
 
