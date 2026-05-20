@@ -29,6 +29,7 @@ try:
         _tool_response_failed,
         append_hook_event,
         classify_tool_risk,
+        cleanup_stale_plugin_caches,
         discover_active_runs,
         memory_override_context,
         modal_budget_decision,
@@ -53,6 +54,7 @@ except ModuleNotFoundError:  # pragma: no cover - package import from tests
         _tool_response_failed,
         append_hook_event,
         classify_tool_risk,
+        cleanup_stale_plugin_caches,
         discover_active_runs,
         memory_override_context,
         modal_budget_decision,
@@ -87,6 +89,31 @@ def handle_session_start(event: dict) -> int:
     if event.get("source") not in {"startup", "resume", "compact", "clear"}:
         return 0
     root = repo_root_from_event(event)
+    # v2.2.1: stale plugin cache hygiene. Best-effort, idempotent. Runs
+    # before active-run discovery so the cleanup happens even on sessions
+    # with no pipeline activity.
+    try:
+        pruned_caches = cleanup_stale_plugin_caches()
+    except Exception:  # noqa: BLE001 - hook must never crash on hygiene
+        pruned_caches = []
+    if pruned_caches:
+        # Record but do not block. The "deleted X stale caches" line goes
+        # to per-run memory only if a run exists; otherwise just the
+        # general hook-events log.
+        append_hook_event(
+            root,
+            "SessionStart",
+            "pruned stale plugin caches: " + ", ".join(pruned_caches),
+        )
+        try:
+            record_hook_memory(
+                root,
+                "SessionStart",
+                "pruned stale plugin caches: " + ", ".join(pruned_caches),
+                {"feature": "cache_cleanup_v2_2_1"},
+            )
+        except Exception:  # noqa: BLE001
+            pass
     runs = discover_active_runs(root)
     context = session_context(runs)
     # v2.2.0: emit memory-rule override block when an active non-drafting

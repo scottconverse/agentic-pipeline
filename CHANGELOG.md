@@ -7,6 +7,75 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.2.1] — 2026-05-20
+
+**v2.2.1 — chat-gate restoration + cache hygiene + scaffold refresh.** Reverses the v1.3.0 → v2.1.0 modal-gate experiment after the operator-UX failure: Cowork's modal overlay hid the chat context the operator needed at gate-decision time, defeating the gate's purpose. Closes the upgrade-hygiene gap where each plugin upgrade leaked 1.5-2 MB of stale cache. Closes the DR-F class structurally with a refresh helper that detects stale scaffolded policy scripts and propagates the plugin canonical on operator approval.
+
+**Test count: 407 passing, 1 skipped** (+35 over the 372-test v2.2.0 baseline: +13 cache cleanup tests, +2 modal-budget tests from the v2.2.1 rewrite, +20 policy-refresh tests). Two new test files: `tests/test_cache_cleanup.py`, `tests/test_policy_refresh.py`. Three existing test files reworked: `tests/test_modal_budget.py` (rewritten for deny-all semantics), `tests/test_v130_redesign.py` (assertions flipped from modal-pinning to chat-pinning, function names renamed for honesty).
+
+### Changed — chat-based gates with deterministic first-token keyword parsing (Commit B)
+
+The three pipeline gates (manifest, plan, manager) plus the pipeline-init scaffold/greenfield/re-init gates now use chat prompts instead of `AskUserQuestion` modals. Each gate prompt names the recognized keywords (`APPROVE` / `REVISE` / `REPLAN` / `BLOCK` / `VIEW`, case-insensitive) and stops. The orchestrator parses the first non-whitespace token of the operator's next message. Anything unrecognized re-prints the prompt with a no-parse note — no LLM interpretation surface.
+
+The interpretive-surface concern that drove the v1.3.0 → v2.1.0 modal redesign is structurally addressed in v2.2.1 by:
+- (a) the deny-all modal-budget hook (every `AskUserQuestion` during an active non-drafting run returns deny with `MODAL_BUDGET_EXCEEDED`),
+- (b) the explicit keyword grammar in each gate prompt (chat replies parse deterministically),
+- (c) the no-parse branch that re-prints the gate prompt instead of guessing.
+
+Why we reversed: v1.3.0 → v2.1.0 modal redesign succeeded at the LLM side (no more chickening-out at the gate, no more inventing extra prompts) but failed at the operator side: Cowork's modal overlay hid the chat context the operator needed to read at gate-decision time. The operator was being asked to ratify a manifest/plan/decision while the rendered prompt covered the YAML / summary / verdict. Recorded as the "stay in chat" operator preference 2026-05-20.
+
+- Updated: `skills/run/references/run.md` Step 6/8/9 (chat gate prompts replace modal language; explicit keyword grammar; no-parse re-print branch); Hard rules updated (`(v2.2.1) Use CHAT for ALL three gates, not modals`; `(v2.2.1) Never fire AskUserQuestion during an active non-drafting pipeline run`)
+- Updated: `skills/run/SKILL.md` description + Tool mapping (chat gate guidance replaces "use the AskUserQuestion tool"); v2.2.1 hard rule
+- Updated: `skills/pipeline-init/SKILL.md` description + Tool mapping (chat keyword grammar); hard rules pointing at chat reply not modal click
+- Updated: `skills/pipeline-init/references/pipeline-init.md` Pass-5 modal language replaced with chat gate prompts for scaffold gate, greenfield SPEC.md gate, and re-init refresh gate
+- Updated: `pipelines/roles/manifest-drafter.md` + mirror (Gate flow §; opening paragraph on operator interaction)
+- Updated: `pipelines/roles/planner.md` + mirror (Gate flow §)
+- Updated: `pipelines/roles/manager.md` + mirror (Gate flow tail paragraph)
+- Updated: `README.md` (tagline + What's-new-in-v2.2.1 + typical-run + three-human-gates + migration sections)
+- Updated: `USER-MANUAL.md` (header tagline + version → 2.2.1 + What's-new-in-v2.2.1 + Running-a-pipeline + three-human-gates + Glossary `Gate`/`Manifest` + Migration-from-v0.5.x sections)
+- Updated: `ARCHITECTURE.md` (top paragraph + §4 intro + Mermaid flowchart `manifest gate` label + sequence diagrams GATE 1/2/3 + §13 chat gate prompt + Glossary `Gate` entry)
+- Updated: `docs/index.html` (eyebrow/badge to v2.2.1 + tagline + Problem section + stage-flow diagram + three-human-gates heading and cards + First-use copy + What-changed-in-v2.2.1 section + footer)
+- Updated: `hooks/hook_utils.py:modal_budget_decision` (gate-stage exception removed; every `AskUserQuestion` during active non-drafting run denies; deny reason now references chat keyword grammar + adopt-and-proceed)
+- Updated: `tests/test_modal_budget.py` (10 tests rewritten for v2.2.1 deny-all semantics; former gate-stage allow tests flipped to deny)
+- Updated: `tests/test_v130_redesign.py` (multiple test assertions flipped from modal-pinning to chat-pinning; test count unchanged at this file level — flipping assertions, not adding new tests; specific renames in test function names where the new behavior reads cleaner; the parametrized `test_no_chat_approve_instructional_residue` family is inverted to assert PRESENCE of the chat keyword grammar rather than absence)
+
+### Added — auto-delete stale plugin cache directories on SessionStart (Commit A)
+
+Each plugin upgrade left the prior version's cache (1.5-2 MB) on disk under `~/.claude/plugins/cache/agent-pipeline-claude/agent-pipeline-claude/<version>/`. Multiple stale siblings made it confusing during debugging which version was live. Also vulnerable to accidental repoint via hand-edited `installed_plugins.json`.
+
+`hooks/hook_utils.py:cleanup_stale_plugin_caches()` deletes every sibling of the loaded version directory whose name parses as a strictly-lower semver. Fires from `handle_session_start` once per session (idempotent; subsequent SessionStart calls find no stale siblings).
+
+- New: `hooks/hook_utils.py:cleanup_stale_plugin_caches`, `_parse_semver`
+- Updated: `hooks/hook_runner.py:handle_session_start` calls `cleanup_stale_plugin_caches()` once near the top + imports
+- 13 new tests in `tests/test_cache_cleanup.py` covering semver parsing, single-sibling cleanup, multi-sibling cleanup, no-op when no siblings exist, idempotency, refusing to delete the loaded version, refusing to delete non-semver-named siblings (skips operator-named dirs), handling of pre-release/build suffixes, and the integration call from `handle_session_start`
+
+### Added — auto-refresh of stale scaffolded policy scripts (Commit C)
+
+Closes the framework gap surfaced by the 2026-05-20 `python-311-honesty` run (bound as DR-F): projects scaffolded under an older plugin version keep their initial copies of `scripts/policy/*.py` indefinitely, even when subsequent plugin upgrades ship corrected versions. The 2026-05-19 `github-cleanup-2026-05-18` project was scaffolded under v2.0 before the v2.1.0 project-shape adapter shipped; its `check_allowed_paths.py` crashed on `git diff` in the umbrella root (which isn't a git repo for the multi-repo-admin shape), forcing the run to ratify the failure as a documented exception rather than rerunning policy cleanly.
+
+The fix: `scripts/refresh_policy_scaffolding.py` compares each project-side `scripts/policy/*.py` against the plugin canonical at `<plugin_root>/scripts/policy/<name>` by SHA-256, reporting a per-script status (`identical` / `stale` / `missing` / `project_only`), and optionally overwriting stale + missing copies with the canonical versions. Project-only scripts (operator-added custom checks) are preserved untouched. The pipeline-init skill's re-init chat gate (added in Commit B's doc refresh) invokes this helper with `--apply` when the operator picks `POLICY` or `EVERYTHING`.
+
+Usage:
+```
+# Report only (non-destructive):
+python "${CLAUDE_PLUGIN_ROOT}/scripts/refresh_policy_scaffolding.py" --project-root .
+
+# Apply: overwrite stale + create missing:
+python "${CLAUDE_PLUGIN_ROOT}/scripts/refresh_policy_scaffolding.py" --project-root . --apply
+
+# JSON output for orchestrator parsing:
+python "${CLAUDE_PLUGIN_ROOT}/scripts/refresh_policy_scaffolding.py" --project-root . --json
+```
+
+- New: `scripts/refresh_policy_scaffolding.py` (~260 lines): `compare_scaffolded_scripts()`, `refresh_scripts()`, `format_report()`, CLI with `--apply` and `--json` flags. Resolves plugin root from `--plugin-root` arg, then `CLAUDE_PLUGIN_ROOT` env var, then `Path(__file__).parents[1]`.
+- 20 new tests in `tests/test_policy_refresh.py` covering the 4 statuses, the apply path, the project-only preservation invariant, dunder-file skipping (`__init__.py`, `__pycache__`), missing dir handling, parent-dir creation, the CLI report-only path, the CLI apply path, the CLI JSON output, and the human-readable report formatting.
+
+### Migration
+
+- Operators on v2.2.0: no manifest or run-directory changes required. New runs pick up the v2.2.1 hooks automatically once the install refreshes.
+- Operators who scripted against the v1.3.0 → v2.1.0 modal click flow: the gates are now chat-based with the explicit keyword grammar above. Replies must be a single keyword on the first non-whitespace token (case-insensitive); anything else re-prints the prompt.
+- Operators with `AskUserQuestion` calls in custom skills that fire during a pipeline run: those calls now return deny. Either move them outside the pipeline run, or convert them to chat prompts.
+
 ## [2.2.0] — 2026-05-19
 
 **Autonomy follow-through.** Closes the 2 of 6 framework hardening fixes that v2.1.0 left on the table from Scott's 2026-05-19 spec. Plus catches a same-class v2.0.x false-positive that v2.1.0's path-aware contract-artifact detection landed in `classify_tool_risk` but missed in `tool_failure_context`.

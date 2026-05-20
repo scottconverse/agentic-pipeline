@@ -58,21 +58,28 @@ The drafter walks the project root for known spec patterns, reads matched files,
 
 Run `python scripts/policy/check_manifest_schema.py --run <run_id>`. If it fails, re-spawn the drafter with `revision_request: "<the specific schema failure>"` and instructions to fix. Re-validate. If still fails after one revision, fall back to "partial draft" presentation at the gate.
 
-### Step 6 — manifest gate (AskUserQuestion)
+### Step 6 — manifest gate (chat)
 
-Render a brief summary of the drafted manifest in chat (top-line goal, allowed_paths, definition_of_done, advances_target). Then fire **ONE** AskUserQuestion:
+Render a brief summary of the drafted manifest in chat (top-line goal, allowed_paths, definition_of_done, advances_target). Then print **ONE** gate prompt at the end of your reply:
 
-- **question**: `Manifest drafted at .agent-runs/<run_id>/manifest.yaml. Approve to start the run, or block to revise.`
-- **header**: `Manifest gate`
-- **options**:
-  - label `APPROVE` — `Start the run. Spawn the researcher next.`
-  - label `Revise` — `Stop. I'll describe what to change in my next message.`
-  - label `View full manifest` — `Print the complete manifest file to chat for review.`
+```
+=== Manifest gate ===
+Manifest drafted at .agent-runs/<run_id>/manifest.yaml.
 
-Handle:
+Reply with one word (case-insensitive):
+  APPROVE  — start the run; spawn the researcher next
+  REVISE   — stop; you'll describe what to change in the next message
+  VIEW     — print the complete manifest.yaml to chat, then re-ask
+```
+
+Stop. Wait for the operator's next message. Parse the FIRST non-whitespace token of their reply, case-insensitive:
+
 - `APPROVE` → log `MANIFEST_APPROVED` to run.log, proceed to Step 7
-- `Revise` → wait for the user's revision text, re-spawn drafter with `revision_request:`, loop back to Step 6 (max 5 cycles)
-- `View full manifest` → Read the manifest, print verbatim in chat, then immediately fire the same AskUserQuestion again
+- `REVISE` → wait for the revision text (it may be on the same line after `REVISE`, or in their follow-up message), re-spawn drafter with `revision_request:`, loop back to Step 6 (max 5 cycles)
+- `VIEW` → Read the manifest, print verbatim in chat, then immediately re-print the same gate prompt
+- Anything else → re-print the gate prompt with a note `(I didn't parse that as APPROVE/REVISE/VIEW; please reply with one of those keywords)`
+
+**Why chat, not modal:** v2.2.1 removed the AskUserQuestion modal infrastructure from gates. The Cowork modal overlay hides chat context the operator needs to read at gate-decision time, defeating the gate's purpose. Chat-based ratification is deterministic (first-token keyword parsing), keeps full context visible, and matches the operator's "stay in chat" preference recorded 2026-05-20.
 
 ### Step 7 — orchestrate the pipeline
 
@@ -96,37 +103,54 @@ After each stage, append a single line to `.agent-runs/<run_id>/run.log`:
 <ISO-timestamp> STAGE_DONE: <stage-name>
 ```
 
-### Step 8 — plan gate (after `plan` stage)
+### Step 8 — plan gate (chat, after `plan` stage)
 
-After the planner writes `plan.md`, fire ONE AskUserQuestion:
+After the planner writes `plan.md`, surface (in chat, above the gate prompt) the first 3 bullets from plan.md §Summary, the files-touched count from §Blast radius (top 5), and the count of items in §Open Questions if any. Then print **ONE** gate prompt at the end of your reply:
 
-- **question**: `Plan drafted. Approve to start execution, replan to revise, or block to halt.`
-- **header**: `Plan gate`
-- **options**:
-  - label `APPROVE` — `Start execution. Spawn the executor next.`
-  - label `REPLAN` — `Stop and revise. I'll describe what to change in my next message.`
-  - label `View plan` — `Print plan.md to chat for review.`
-  - label `Block` — `Stop the run with a finding.`
+```
+=== Plan gate ===
+Plan drafted at .agent-runs/<run_id>/plan.md.
 
-Surface (above the question) the first 3 bullets from plan.md §Summary, the files-touched count from §Blast radius (top 5), and the count of items in §Open Questions if any.
+Reply with one word (case-insensitive):
+  APPROVE  — start execution; spawn the executor next
+  REPLAN   — stop and revise; describe what to change in the next message
+  BLOCK    — stop the run with a finding
+  VIEW     — print plan.md to chat, then re-ask
+```
 
-Handle as in Step 6.
+Stop. Wait for the operator's next message. Parse the first non-whitespace token, case-insensitive:
 
-### Step 9 — manager gate (after `auto-promote` stage, only if `auto_promote_aware: true` AND NO PROMOTE preset)
+- `APPROVE` → log `PLAN_APPROVED` to run.log, proceed to next stage (test-write)
+- `REPLAN` → wait for revision text, re-spawn planner with `revision_request:`, loop back
+- `BLOCK` → log `STAGE_BLOCKED: plan` with the operator's reason, halt the run
+- `VIEW` → Read plan.md, print verbatim in chat, then immediately re-print the gate prompt
+- Anything else → re-print the gate prompt with the no-parse note
 
-Before firing the gate, check if `manager-decision.md` already exists with `**Decision: PROMOTE**` as its first non-empty line. If yes, the auto-promote stage already wrote it. Spawn the manager subagent in **validate-and-append** mode (it appends a confirmation section without rewriting the verdict), log `STAGE_DONE: manager (auto-promoted)`, and skip the gate entirely.
+### Step 9 — manager gate (chat, after `auto-promote` stage, only if `auto_promote_aware: true` AND NO PROMOTE preset)
 
-If no preset, fire ONE AskUserQuestion:
+Before invoking the gate, check if `manager-decision.md` already exists with `**Decision: PROMOTE**` as its first non-empty line AND was written by `auto_promote.py` (look for a sentinel `*Preset by auto_promote.py at <timestamp>.*` line in the body). If both are true, the evidence-driven auto-promote path already ratified the run. Spawn the manager subagent in **validate-and-append** mode (it appends a confirmation section without rewriting the verdict), log `STAGE_DONE: manager (auto-promoted)`, and skip the gate entirely.
 
-- **question**: `Manager's recommendation: <PROMOTE | BLOCK | REPLAN>. <one-line reasoning>. Confirm?`
-- **header**: `Manager gate`
-- **options**:
-  - label `APPROVE manager verdict` — `Accept the manager's recommendation as the final decision.`
-  - label `BLOCK` — `Override manager: stop the run with a finding.`
-  - label `REPLAN` — `Override manager: revise the manifest or plan.`
-  - label `View manager decision` — `Print manager-decision.md to chat for review.`
+If no auto-promote preset, surface (in chat, above the gate prompt) the counts: verifier open items, critic findings (with structural breakdown), drift findings, the first paragraph of `manager-decision.md`, and any documented exceptions (DR-* entries from `director-decisions.md`) that auto-promote couldn't ratify alone. Then print **ONE** gate prompt at the end of your reply:
 
-Surface (above the question) the counts: verifier open items, critic findings (with structural breakdown), drift findings, and the first paragraph of manager-decision.md.
+```
+=== Manager gate ===
+Manager's recommendation: <PROMOTE | BLOCK | REPLAN>
+Reasoning: <one-line summary>
+
+Reply with one word (case-insensitive):
+  APPROVE  — accept the manager's recommendation; close the run
+  BLOCK    — override; stop the run with a finding
+  REPLAN   — override; revise manifest or plan
+  VIEW     — print manager-decision.md to chat, then re-ask
+```
+
+Stop. Wait for the operator's next message. Parse the first non-whitespace token, case-insensitive:
+
+- `APPROVE` → log `RUN_COMPLETE: <disposition>` to run.log (disposition follows manager's recommendation), update active-control-state.md `active_run: false`, write Step 10 final report
+- `BLOCK` → log `STAGE_BLOCKED: manager (operator override)` with the operator's reason, halt the run
+- `REPLAN` → wait for revision text, route back to manifest gate (Step 6) for re-draft
+- `VIEW` → Read manager-decision.md, print verbatim in chat, then immediately re-print the gate prompt
+- Anything else → re-print the gate prompt with the no-parse note
 
 ### Step 10 — final report
 
@@ -173,12 +197,12 @@ Maximum 10 rows. If more exist, suffix `(... <N> older)`.
 ## Hard rules
 
 - **One slash command per project session.** If a `/run` is already in flight (the most recent `.agent-runs/<run_id>/run.log` ends in `STAGE_STARTED` without a paired `STAGE_DONE`), refuse to start a new one; offer `resume` or explicit abort.
-- **Use AskUserQuestion for ALL three gates.** No chat-message-with-special-syntax gates. The v1.2.x failure mode was the LLM inventing extra prompts or chickening out at the gate; modal AskUserQuestion eliminates the interpretive surface.
-- **(v2.1.0) AskUserQuestion is permitted ONLY at the three declared gates** (manifest, plan, manager). The modal-budget hook (`hooks/hook_utils.py:modal_budget_decision`) enforces this — any AskUserQuestion fired when `current_stage` is not a declared `gate: human_approval` stage returns deny. The v1.3.0 design eliminated chat-APPROVE ceremony; the v2.0.x failure mode was the orchestrator manufacturing extra modals between gates (turning 3 clicks per run into 15+). v2.1.0 closes that loophole. See "Adopt-and-proceed" below for the corrected pattern.
-- **Never re-fire a gate after it advanced.** Once APPROVE returns, the next message advances to the next stage. Do not re-ask for confirmation.
-- **Never proceed past a failed validation by guessing.** Surface the failure with remediation pointers; let the user steer.
+- **(v2.2.1) Use CHAT for ALL three gates, not modals.** The v1.3.0 → v2.1.0 design used `AskUserQuestion` modals to eliminate the interpretive surface of chat-APPROVE ceremony. That worked for the LLM-side discipline but failed for the operator UX: Cowork's modal overlay hides the chat context the operator needs to read at gate-decision time. v2.2.1 reverses to chat-based gates with deterministic first-token keyword parsing (`APPROVE` / `REVISE` / `REPLAN` / `BLOCK` / `VIEW`, case-insensitive). The interpretive-surface concern is now structurally addressed by: (a) the modal-budget hook denying ALL `AskUserQuestion` during active non-drafting pipeline runs (so the orchestrator can't invent extra prompts via modal), (b) the explicit keyword grammar in each gate prompt (so chat replies parse deterministically), (c) the "no-parse" branch that re-prints the gate prompt instead of guessing.
+- **(v2.2.1) Never fire `AskUserQuestion` during an active non-drafting pipeline run.** The modal-budget hook (`hooks/hook_utils.py:modal_budget_decision`) denies every such call with `MODAL_BUDGET_EXCEEDED`. Gates are chat-based; non-gate decisions follow "Adopt-and-proceed" below. The previous v2.1.0 allow-at-declared-gate exception is removed.
+- **Never re-fire a gate after it advanced.** Once `APPROVE` is parsed, the next message advances to the next stage. Do not re-print the gate prompt for confirmation.
+- **Never proceed past a failed validation by guessing.** Surface the failure with remediation pointers; let the operator steer via chat.
 - **Never write outside `.agent-runs/<run_id>/` and the project working tree** that the pipeline stages themselves modify.
-- **Auto-promote is evidence-driven, not authorization-driven.** If `auto_promote.py` says ELIGIBLE, the gate is skipped automatically. If it says NOT_ELIGIBLE, the human gate fires — no override.
+- **Auto-promote is evidence-driven, not authorization-driven.** If `auto_promote.py` says ELIGIBLE and presets `manager-decision.md` with `**Decision: PROMOTE**`, the manager gate is skipped automatically. If it says NOT_ELIGIBLE, the chat-based manager gate fires — no override.
 
 ## Adopt-and-proceed (v2.1.0)
 
