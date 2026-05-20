@@ -30,6 +30,7 @@ try:
         append_hook_event,
         classify_tool_risk,
         discover_active_runs,
+        memory_override_context,
         modal_budget_decision,
         policy_recheck_decision,
         pop_pending_recheck_on_bash_success,
@@ -53,6 +54,7 @@ except ModuleNotFoundError:  # pragma: no cover - package import from tests
         append_hook_event,
         classify_tool_risk,
         discover_active_runs,
+        memory_override_context,
         modal_budget_decision,
         policy_recheck_decision,
         pop_pending_recheck_on_bash_success,
@@ -85,11 +87,26 @@ def handle_session_start(event: dict) -> int:
     if event.get("source") not in {"startup", "resume", "compact", "clear"}:
         return 0
     root = repo_root_from_event(event)
-    context = session_context(discover_active_runs(root))
+    runs = discover_active_runs(root)
+    context = session_context(runs)
+    # v2.2.0: emit memory-rule override block when an active non-drafting
+    # run exists and the allowlist resolves matching user-memory files.
+    # Concatenated with session_context so a single additionalContext
+    # block carries both signals.
+    override = memory_override_context(root, runs)
+    if override:
+        if context:
+            context = context + "\n\n" + override
+        else:
+            context = override
     if not context:
         return 0
-    append_hook_event(root, "SessionStart", "added active run context")
-    record_hook_memory(root, "SessionStart", "loaded active run context")
+    note_parts = ["added active run context"]
+    if override:
+        note_parts.append("memory-rule overrides emitted")
+    note = "; ".join(note_parts)
+    append_hook_event(root, "SessionStart", note)
+    record_hook_memory(root, "SessionStart", note)
     return write_json(_context_payload("SessionStart", context))
 
 

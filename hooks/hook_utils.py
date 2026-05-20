@@ -217,6 +217,228 @@ def read_memory_handoff(run: ActiveRun) -> str:
     return "Agent Pipeline persistent memory:\n" + _truncate(text, 2400)
 
 
+# --- v2.2.0: memory-rule scope override ----------------------------------
+#
+# Closes the proximate cause of the v2.0.x "modal pumping" failure mode:
+# operator-layer memory rules (notably feedback_no_unilateral_product_
+# decisions.md) get loaded into every Claude Code session BEFORE the LLM's
+# first turn. When those rules conflict with the pipeline's v1.3.0
+# modal-eliminating design, the LLM reads both and lets the older / more
+# conservative one win, manufacturing modals between gates.
+#
+# Fix: SessionStart hook emits an additionalContext override block when
+# (a) an active non-drafting pipeline run exists AND
+# (b) pipelines/memory-scope-allowlist.yaml lists memory files that
+#     resolve in the user's memory directory.
+# The block tells the LLM that the listed rules are suspended for the
+# duration of the run. It does not modify the memory files themselves
+# (the harness loads them earlier and we can't unload), but the override
+# takes precedence in the LLM's reading order.
+#
+# Backstop: the v2.2.0 modal-budget hook will mechanically deny any
+# AskUserQuestion fired outside the declared gates, even if the LLM
+# ignores this framing context.
+
+_MEMORY_OVERRIDE_ALLOWLIST_FILENAME = "memory-scope-allowlist.yaml"
+
+
+def _memory_override_allowlist_path(repo_root: Path) -> Path | None:
+    """Locate the allowlist YAML.
+
+    Resolution order:
+      1. ``<repo_root>/.pipelines/memory-scope-allowlist.yaml`` -- the
+         project's scaffolded copy (per the consumer-project layout).
+      2. ``<plugin_root>/pipelines/memory-scope-allowlist.yaml`` -- the
+         plugin source's canonical copy.
+    Returns the first that exists, or None.
+    """
+    candidates = [
+        repo_root / ".pipelines" / _MEMORY_OVERRIDE_ALLOWLIST_FILENAME,
+        Path(__file__).resolve().parents[1] / "pipelines" / _MEMORY_OVERRIDE_ALLOWLIST_FILENAME,
+    ]
+    for c in candidates:
+        try:
+            if c.exists() and c.is_file():
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def _parse_memory_override_allowlist(yaml_path: Path) -> list[dict[str, str]]:
+    """Tiny line-based parser for the memory-scope-allowlist schema.
+
+    Expected shape:
+
+        memory_overrides:
+          - file: <basename>
+            reason: "<single-line quoted string>"
+          - file: ...
+            reason: ...
+
+    Returns a list of {"file": str, "reason": str} dicts. Tolerates
+    comments, blank lines, and minor whitespace variation. Designed to
+    parse the restricted schema without pulling in pyyaml -- the same
+    pattern used elsewhere in this module
+    (``_gate_stages_from_yaml``).
+    """
+    entries: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    try:
+        text = yaml_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    in_memory_overrides = False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Top-level key
+        if stripped.startswith("memory_overrides:"):
+            in_memory_overrides = True
+            continue
+        if not in_memory_overrides:
+            continue
+        # New entry: `- file: <name>` on a single line, or `- ` then
+        # `file:` on the next line. We support both shapes.
+        if stripped.startswith("- "):
+            if current is not None:
+                if current.get("file"):
+                    entries.append(current)
+            current = {}
+            rest = stripped[2:].strip()
+            if rest.startswith("file:"):
+                current["file"] = rest.split(":", 1)[1].strip().strip('"').strip("'")
+            continue
+        if current is None:
+            continue
+        if stripped.startswith("file:"):
+            current["file"] = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+            continue
+        if stripped.startswith("reason:"):
+            rest = stripped[len("reason:"):].strip()
+            # Strip a single layer of surrounding quotes; tolerate
+            # bare strings too.
+            if (rest.startswith('"') and rest.endswith('"')) or (
+                rest.startswith("'") and rest.endswith("'")
+            ):
+                rest = rest[1:-1]
+            current["reason"] = rest
+            continue
+    if current is not None and current.get("file"):
+        entries.append(current)
+    return entries
+
+
+def _user_memory_search_roots() -> list[Path]:
+    """Return candidate user-memory directories to search.
+
+    1. ``$CLAUDE_USER_MEMORY_DIR`` if set (operator override + test
+       hook).
+    2. Every ``~/.claude/projects/<encoded>/memory/`` directory that
+       exists (Claude Code's convention for per-workspace memory).
+    """
+    roots: list[Path] = []
+    env_hint = os.environ.get("CLAUDE_USER_MEMORY_DIR")
+    if env_hint:
+        try:
+            roots.append(Path(env_hint).expanduser().resolve())
+        except (OSError, ValueError):
+            pass
+    try:
+        base = Path.home() / ".claude" / "projects"
+        if base.exists():
+            for proj in sorted(base.iterdir()):
+                mem = proj / "memory"
+                try:
+                    if mem.is_dir():
+                        roots.append(mem.resolve())
+                except OSError:
+                    continue
+    except (OSError, RuntimeError):
+        pass
+    return roots
+
+
+def _resolve_user_memory_file(filename: str) -> Path | None:
+    """Find a user memory file by basename. Returns first existing match."""
+    if not filename:
+        return None
+    for root in _user_memory_search_roots():
+        candidate = root / filename
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def memory_override_context(repo_root: Path, runs: list[ActiveRun]) -> str:
+    """v2.2.0 SessionStart memory-rule override block.
+
+    Returns an ``additionalContext`` string telling the LLM which
+    user-memory rules are suspended for the active run, or ``""`` if
+    no override applies (no active run, all drafting, allowlist
+    missing/empty, or no listed files resolve in the user's memory
+    dir).
+
+    The block is concatenated with ``session_context`` in
+    ``handle_session_start``. It does not replace the memory files;
+    Claude Code loads those earlier in the context window. The
+    override takes precedence by virtue of appearing later (LLM
+    instruction-following convention) and by virtue of the v2.2.0
+    modal-budget hook denying any modal that violates the suspension.
+    """
+    non_drafting = [r for r in runs if not r.is_drafting]
+    if not non_drafting:
+        return ""
+    allowlist_path = _memory_override_allowlist_path(repo_root)
+    if allowlist_path is None:
+        return ""
+    entries = _parse_memory_override_allowlist(allowlist_path)
+    if not entries:
+        return ""
+    resolved: list[tuple[str, Path, str]] = []
+    for entry in entries:
+        filename = entry.get("file") or ""
+        if not filename:
+            continue
+        path = _resolve_user_memory_file(filename)
+        if path is None:
+            continue
+        resolved.append((filename, path, entry.get("reason", "")))
+    if not resolved:
+        return ""
+    run = non_drafting[0]
+    lines = [
+        "=== MEMORY OVERRIDES FOR THIS PIPELINE RUN ===",
+        f"Active run: {run.run_id}",
+        "",
+        "The following user-memory rules are SUSPENDED for the duration of",
+        "this /agent-pipeline-claude:run. They appear earlier in your",
+        "context window because Claude Code loads memory files into every",
+        "session. The override below takes precedence for this run only.",
+        "",
+    ]
+    for filename, path, reason in resolved:
+        lines.append(f"- {filename}")
+        lines.append(f"  ({path})")
+        if reason:
+            lines.append(f"  reason: {reason}")
+        lines.append("")
+    lines.append(
+        "After this run ends (active-control-state.md shows active_run: "
+        "false or the run dir is absent), the rules reactivate."
+    )
+    lines.append(
+        "Backstop: the modal-budget hook (v2.1.0) and policy-recheck hook "
+        "(v2.2.0) mechanically enforce the design these overrides codify."
+    )
+    return "\n".join(lines)
+
+
 def stale_skill_context(prompt: str) -> str:
     lowered = prompt.lower()
     hits = []
