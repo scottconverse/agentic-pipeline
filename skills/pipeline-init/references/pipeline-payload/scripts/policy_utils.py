@@ -30,6 +30,11 @@ def find_repo_root(script_file: str) -> Path:
          invocations from inside the plugin repo.
       4. ``script_dir.parent`` — last-resort fallback when no other
          signal is available.
+
+    The Phase 6.c verification round caught only ``show_run_status.py``
+    missing the env-var check; this central fix propagates to every
+    caller of ``policy_utils.find_repo_root`` (and, by extension, to
+    every script that imports it).
     """
     env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
     if env_dir:
@@ -99,6 +104,81 @@ def _outside_quotes(line: str) -> str:
             continue
         chars.append(" " if in_single or in_double else char)
     return "".join(chars)
+
+
+# --- v2.1.0: project-shape adapter ----------------------------------------
+#
+# Several policy checks (check_allowed_paths, check_no_todos,
+# check_scope_lock) assume the canonical project shape: a single-codebase
+# git-tracked repo with numeric rung-versioned release plan. Pipeline
+# runs against other shapes (multi-repo admin sweeps, library-only
+# projects without rungs) hit template-mismatch failures that route the
+# run to manual manager-gate instead of auto-promote -- even when the
+# work itself is clean.
+#
+# v2.1.0 introduces an optional `project_shape:` field in SPEC.md (or
+# manifest.yaml as a fallback). Recognized shapes:
+#
+#   single-codebase  (default if unset): existing behavior
+#   multi-repo-admin: orchestration root with per-target-repo work
+#                     under _repos/<name>/; no umbrella git repo;
+#                     non-numeric rung names allowed.
+#   library:          a single git repo with no rung-versioned release
+#                     plan; treats SPEC as canonical rung-equivalent.
+#
+# Scripts call read_project_shape(repo_root) and branch their logic
+# accordingly. Unknown values default to single-codebase (back-compat).
+
+_PROJECT_SHAPE_VALUES = frozenset(
+    {"single-codebase", "multi-repo-admin", "library"}
+)
+
+
+def read_project_shape(repo_root: Path) -> str:
+    """Return the project_shape declared in SPEC.md or manifest.yaml.
+
+    Resolution order:
+      1. SPEC.md at repo root -- looks for a top-level line
+         `project_shape: <value>` (case-insensitive on the key).
+      2. Any manifest.yaml under .agent-runs/<id>/ -- the most recently
+         modified one -- looking for `project_shape: <value>` under
+         pipeline_run or at the top level.
+
+    Returns the value if recognized, else "single-codebase" (default).
+    Never raises -- failures fall back to default.
+    """
+    candidates: list[Path] = []
+    spec = repo_root / "SPEC.md"
+    if spec.exists():
+        candidates.append(spec)
+    runs_dir = repo_root / ".agent-runs"
+    if runs_dir.exists():
+        try:
+            manifests = sorted(
+                (p for p in runs_dir.rglob("manifest.yaml") if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            candidates.extend(manifests[:3])
+        except Exception:
+            pass
+    pattern = re.compile(r"^\s*project_shape:\s*[\"']?([A-Za-z0-9_-]+)", re.IGNORECASE)
+    for path in candidates:
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                match = pattern.match(line)
+                if match:
+                    value = match.group(1).lower()
+                    if value in _PROJECT_SHAPE_VALUES:
+                        return value
+        except Exception:
+            continue
+    return "single-codebase"
+
+
+def is_git_repo(repo_root: Path) -> bool:
+    """Cheap check for whether repo_root is a git working tree."""
+    return (repo_root / ".git").exists()
 
 
 def unsupported_yaml_constructs(text: str) -> list[str]:

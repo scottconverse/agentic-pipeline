@@ -375,43 +375,6 @@ def _check(fields: dict[str, object]) -> list[dict[str, str]]:
     # v1.2.0 multi-repo (target_repos) — optional
     # ---------------------------------------------------------------------
 
-    # ---------------------------------------------------------------------
-    # v1.2.1 autonomous-mode fields
-    # ---------------------------------------------------------------------
-
-    gate_policy = fields.get("gate_policy")
-    autonomous_grant = fields.get("autonomous_grant")
-
-    if gate_policy is not None and gate_policy not in ("human", "autonomous", "", None):
-        violations.append(
-            {
-                "field": "gate_policy",
-                "problem": f"unknown value {gate_policy!r}; expected 'human' or 'autonomous'",
-                "current": _short_repr(gate_policy),
-                "suggest": (
-                    "v1.3.0+ retired the gate_policy field entirely. The three human "
-                    "gates (manifest, plan, manager) fire as one-click AskUserQuestion "
-                    "modals; manager auto-fires on green evidence. Remove the "
-                    "gate_policy line — no replacement value is needed."
-                ),
-            }
-        )
-
-    if isinstance(gate_policy, str) and gate_policy == "autonomous":
-        if not isinstance(autonomous_grant, str) or not autonomous_grant.strip():
-            violations.append(
-                {
-                    "field": "autonomous_grant",
-                    "problem": "missing (required when gate_policy=autonomous)",
-                    "current": _short_repr(autonomous_grant),
-                    "suggest": (
-                        "set to the path of your grant file under "
-                        ".agent-workflows/autonomous-grants/. Ask Claude in chat to "
-                        "create the grant — the chat command writes the file."
-                    ),
-                }
-            )
-
     target_repos = fields.get("target_repos")
     if target_repos is not None:
         if not isinstance(target_repos, list):

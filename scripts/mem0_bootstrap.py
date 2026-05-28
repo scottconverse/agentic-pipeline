@@ -63,7 +63,11 @@ def _locate_config_template(project_root: Path) -> Path | None:
 # Pin for the on-demand vendor clone. Refresh by editing this constant
 # and verifying against the new commit. Documented at vendor/VENDOR_PINS.md.
 MEM0_VENDOR_REPO = "https://github.com/mem0ai/mem0.git"
-MEM0_VENDOR_PIN = "main"  # TODO: pin a specific commit once an end-to-end smoke validates one
+# mem0ai/mem0 v2.0.4 (latest stable release as of 2026-05-28). An immutable
+# commit SHA, not a moving branch, so `mem0 up` resolves the same vendor tree
+# every time. To refresh: bump to a newer release commit and update
+# vendor/VENDOR_PINS.md in lockstep.
+MEM0_VENDOR_PIN = "75a37ec93db7278e3bd9aaf2aa3d6e5139e6789d"
 
 
 def _ensure_vendor_mem0(repo_root: Path) -> Path:

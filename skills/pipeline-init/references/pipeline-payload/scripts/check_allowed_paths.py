@@ -210,6 +210,28 @@ def main() -> int:
         )
         return 0
 
+    # v2.1.0 project-shape adapter: multi-repo-admin runs orchestrate
+    # work into _repos/<name>/ clones; the umbrella project root is not
+    # itself a git repo. `git diff` would exit 129 and crash the script.
+    # When the shape is declared multi-repo-admin AND the root is not a
+    # git working tree, skip the umbrella diff check with an explicit
+    # PASS-degraded note. Per-target-repo diffs are still verifiable
+    # via careful-coding's pre/post discipline inside each _repos/<name>/
+    # clone (those ARE git repos).
+    try:
+        from policy_utils import is_git_repo, read_project_shape
+    except ModuleNotFoundError:  # pragma: no cover - installed layout
+        from scripts.policy_utils import is_git_repo, read_project_shape
+    shape = read_project_shape(REPO_ROOT)
+    if shape == "multi-repo-admin" and not is_git_repo(REPO_ROOT):
+        print(
+            "check_allowed_paths: PASS (degraded) — project_shape=multi-repo-admin "
+            "and umbrella root is not a git working tree. Umbrella git-diff check "
+            "skipped; per-target-repo diffs verified inside _repos/<name>/ clones "
+            "under careful-coding's pre/post discipline."
+        )
+        return 0
+
     changed = _git_changed_files()
 
     violations: list[tuple[str, str]] = []

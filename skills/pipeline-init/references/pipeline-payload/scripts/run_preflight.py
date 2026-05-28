@@ -48,9 +48,6 @@ CHECKS: list[tuple[str, list[str], list[str]]] = [
     ("check_manifest_schema", ["check_manifest_schema.py"], ["--run"]),
     ("check_active_target", ["check_active_target.py"], ["--run"]),
     ("check_manifest_paths", ["check_manifest_paths.py"], ["--run"]),
-    # v1.2.1: validate the autonomous-mode grant if the manifest declares
-    # gate_policy: autonomous. Returns HUMAN-MODE silently for normal runs.
-    ("check_autonomous_mode", ["check_autonomous_mode.py"], ["--run"]),
     # Pin the manifest SHA-256 at preflight time. The --check counterpart
     # runs in run_all.py after execute, catching mid-run mutation.
     ("check_manifest_immutable_pin", ["check_manifest_immutable.py", "--pin"], ["--run"]),

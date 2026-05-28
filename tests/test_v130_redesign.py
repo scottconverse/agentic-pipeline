@@ -753,34 +753,6 @@ def test_changelog_has_v130_entry():
 
 
 # ---------------------------------------------------------------------------
-# Backward compat: stubs return zero so existing yamls still work
-# ---------------------------------------------------------------------------
-
-def test_check_autonomous_mode_is_noop():
-    import subprocess
-    import sys
-    r = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "scripts" / "check_autonomous_mode.py")],
-        capture_output=True,
-        text=True,
-    )
-    assert r.returncode == 0
-    assert "HUMAN-MODE" in r.stdout
-
-
-def test_check_autonomous_compliance_is_noop():
-    import subprocess
-    import sys
-    r = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "scripts" / "check_autonomous_compliance.py")],
-        capture_output=True,
-        text=True,
-    )
-    assert r.returncode == 0
-    assert "NO-OP" in r.stdout
-
-
-# ---------------------------------------------------------------------------
 # Judge reincorporation (2026-05-28): the orchestrator propose-execute loop,
 # the gated executor protocol, the ARCHITECTURE truth fix, and the preserved
 # conservative floors. These pin the live design so a later edit can't

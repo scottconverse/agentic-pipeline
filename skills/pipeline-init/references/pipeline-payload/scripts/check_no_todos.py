@@ -51,6 +51,13 @@ DEFAULT_EXCLUDED_DIRS = {
     "dist",
     ".tox",
     "site-packages",
+    # v2.1.0: multi-repo-admin runs clone target repos into _repos/.
+    # Those clones are third-party project source; scanning them for
+    # TODO markers produces false positives (especially regex patterns
+    # that LITERALLY contain "TODO" / "FIXME" as detection strings).
+    # Excluded unconditionally because the directory name is reserved
+    # for run-managed clones across project shapes.
+    "_repos",
 }
 
 PATTERN = re.compile(r"\b(TODO|FIXME|HACK)\b", re.IGNORECASE)

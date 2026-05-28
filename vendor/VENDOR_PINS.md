@@ -9,7 +9,7 @@ commit and the CLI clones it on first use.
 
 | Name  | Repo                          | Pinned commit | Purpose                                  |
 |-------|-------------------------------|---------------|------------------------------------------|
-| mem0  | https://github.com/mem0ai/mem0 | latest `main` | OSS Mem0 server (Qdrant + Postgres stack) |
+| mem0  | https://github.com/mem0ai/mem0 | `75a37ec` (v2.0.4) | OSS Mem0 server (Qdrant + Postgres stack) |
 
 To refresh a pin: edit `MEM0_VENDOR_PIN` in `scripts/mem0_bootstrap.py`,
 test against the new commit, commit the pin change.

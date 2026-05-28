@@ -12,6 +12,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import os
+
 try:
     from policy_utils import find_repo_root
     from check_pipeline_control_loop import parse_control_state
@@ -20,7 +22,22 @@ except ModuleNotFoundError:  # pragma: no cover - source-tree test import
     from scripts.check_pipeline_control_loop import parse_control_state
 
 
-REPO_ROOT = find_repo_root(__file__)
+def _resolve_repo_root() -> Path:
+    """Prefer CLAUDE_PROJECT_DIR over script-relative discovery.
+
+    When the script lives in the plugin install cache (no .git ancestor),
+    find_repo_root(__file__) returns the plugin install dir, not the
+    user's project. The hook layer already uses this pattern; the
+    show-run-status script needs the same fix per the Phase 6.b
+    verification report (checkpoint H).
+    """
+    env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env_dir:
+        return Path(env_dir).resolve()
+    return find_repo_root(__file__)
+
+
+REPO_ROOT = _resolve_repo_root()
 RUN_DIR = REPO_ROOT / ".agent-runs"
 
 
@@ -101,7 +118,9 @@ def main() -> int:
     parser.add_argument("--run", required=True, help="Pipeline run id under .agent-runs/.")
     args = parser.parse_args()
 
-    run_dir = RUN_DIR / args.run
+    # Re-resolve at call time so env changes take effect (mostly for tests
+    # that monkeypatch CLAUDE_PROJECT_DIR; runtime always reads env once).
+    run_dir = _resolve_repo_root() / ".agent-runs" / args.run
     if not run_dir.is_dir():
         print(f"show-run-status: FAIL - run directory not found at {run_dir}", file=sys.stderr)
         return 1
