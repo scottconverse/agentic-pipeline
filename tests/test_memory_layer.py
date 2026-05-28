@@ -981,3 +981,28 @@ def test_memory_handoff_legacy_no_sidecar_bootstraps(tmp_path) -> None:
     assert "MEMORY HASH MISMATCH" not in out
     assert sidecar.exists(), "legacy file must get a sidecar on first touch"
     assert verify_memory_file(handoff) is True
+
+
+def test_memory_handoff_vanished_during_verify_treated_as_missing(
+    tmp_path, monkeypatch
+) -> None:
+    """If the handoff disappears in the window between the existence check and
+    the verify read, read_memory_handoff returns "" (missing), not the HASH
+    MISMATCH warning — there is no changed content to warn about."""
+    run = _ws6_run_handle(tmp_path)
+    handoff = run.run_dir / "memory" / "handoff_current.md"
+    handoff.write_text("# memory\noriginal\n", encoding="utf-8")
+    _write_memory_sidecar(handoff)
+
+    def vanishing_verify(path: Path) -> bool:
+        # Simulate an out-of-band deletion inside the TOCTOU window, then the
+        # unreadable-file result verify_memory_file would return.
+        path.unlink()
+        return False
+
+    monkeypatch.setattr("hooks.hook_utils.verify_memory_file", vanishing_verify)
+
+    out = read_memory_handoff(run)
+
+    assert out == ""
+    assert "MEMORY HASH MISMATCH" not in out

@@ -455,6 +455,12 @@ def read_memory_handoff(run: ActiveRun) -> str:
     # memory as unavailable rather than trusting bytes that changed on
     # disk since the pipeline last wrote them.
     if not verify_memory_file(path):
+        # If the file vanished in the window between the existence check above
+        # and the verify read (e.g. the run dir was cleaned mid-session),
+        # treat it as missing rather than a mismatch: there is no changed
+        # content to warn about, and "" matches the not-exists path.
+        if not path.exists():
+            return ""
         return memory_hash_mismatch_warning(path)
     text = path.read_text(encoding="utf-8-sig", errors="replace").strip()
     if not text:
@@ -2259,6 +2265,11 @@ def record_hook_memory(repo_root: Path, event_name: str, message: str, metadata:
         "message": truncated,
         "metadata": merged_metadata,
     }
+    # v3.0.0 WS-6: sidecar every per-run memory write. Today the only
+    # verifier is read_memory_handoff, which checks handoff_current.md alone;
+    # the JSONL sidecars below are forward-looking (a future WS that verifies
+    # the events.jsonl tail directly will consume them). Keep writing them so
+    # that verifier inherits a complete sidecar set rather than a gap.
     target_file = memory_dir / _memory_file_for_event(event_name)
     append_jsonl(target_file, record)
     _write_memory_sidecar(target_file)
