@@ -2053,14 +2053,85 @@ def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:
     return any(re.search(pattern, value, flags=re.IGNORECASE) for pattern in patterns)
 
 
-def _touches_outside_allowed_paths(event_or_command, run_dir: Path) -> bool:
-    """Check if a tool would write to a path outside manifest.allowed_paths.
+def _relativize_write_candidate(raw: str, repo_root: Path) -> tuple[str, bool]:
+    """Lexically resolve a model-supplied write target to a repo-relative
+    POSIX path. Returns (rel_posix, escaped).
 
-    Accepts either a Cowork event dict (preferred — extracts file_path from
-    structured tool_input for Write/Edit/MultiEdit/NotebookEdit) or a bare
-    command string (legacy callers that already serialized to text).
-    Returns True only when ALL extracted candidate paths are outside the
-    allowed set and the allowed set is non-empty.
+    `escaped` is True when the target is absolute-and-outside-repo, climbs
+    above the repo root via `..`, or (best-effort) traverses a symlink whose
+    nearest existing ancestor resolves outside the repo. The core resolution
+    is lexical (``os.path.normpath``) so it is TOCTOU-safe and works on a
+    write target that does not exist yet; the symlink check only consults the
+    filesystem for the nearest *existing* ancestor. A path flagged `escaped`
+    is always out of scope.
+
+    v3.0.0 (Opus 4.8): replaces the prior `raw.replace("\\\\","/").lstrip("./")`
+    string-prefix check, under which `src/../../etc/passwd` started with
+    `src/` and was wrongly treated as in-scope.
+    """
+    s = raw.replace("\\", "/").strip()
+    if not s:
+        return "", True
+    win = sys.platform == "win32"
+    root_abs = os.path.normpath(str(repo_root))
+    if s.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", s):
+        cand_abs = os.path.normpath(s)
+    else:
+        cand_abs = os.path.normpath(os.path.join(root_abs, s))
+    root_posix = root_abs.replace("\\", "/").rstrip("/")
+    cand_posix = cand_abs.replace("\\", "/")
+
+    def _contains(parent: str, child: str) -> bool:
+        p, c = (parent.lower(), child.lower()) if win else (parent, child)
+        return c == p or (c + "/").startswith(p + "/")
+
+    if not _contains(root_posix, cand_posix):
+        return cand_posix, True
+    rel = cand_posix[len(root_posix):].lstrip("/")
+    # Best-effort symlink check: realpath the nearest existing ancestor and
+    # confirm it is still under the real repo root.
+    try:
+        probe = cand_abs
+        while probe and not os.path.exists(probe):
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                probe = ""
+                break
+            probe = parent
+        if probe and os.path.exists(probe):
+            real_probe = os.path.realpath(probe).replace("\\", "/").rstrip("/")
+            real_root = os.path.realpath(str(repo_root)).replace("\\", "/").rstrip("/")
+            if not _contains(real_root, real_probe):
+                return rel, True
+    except Exception:  # noqa: BLE001 - symlink probe is best-effort
+        pass
+    return rel, False
+
+
+def _rel_under_allowed(rel: str, allowed: list[str]) -> bool:
+    """True if the repo-relative POSIX path `rel` is exactly an allowed
+    prefix or sits under one. Case-insensitive on Windows so a case-variant
+    path cannot evade (or falsely fail) the allowed set."""
+    win = sys.platform == "win32"
+    rel_cmp = rel.lower() if win else rel
+    for item in allowed:
+        norm = item.replace("\\", "/").strip().rstrip("/")
+        if not norm:
+            continue
+        norm_cmp = norm.lower() if win else norm
+        if rel_cmp == norm_cmp or rel_cmp.startswith(norm_cmp + "/"):
+            return True
+    return False
+
+
+def _touches_outside_allowed_paths(event_or_command, run_dir: Path) -> bool:
+    """Check whether a tool call would write outside manifest.allowed_paths.
+
+    Accepts a Cowork event dict (preferred) or a bare command string. Returns
+    True (deny) when ANY extracted write target is out of scope and the
+    allowed set is non-empty. v3.0.0 resolves each candidate path lexically
+    before the prefix comparison so `..` traversal, out-of-repo absolute
+    paths, and (best-effort) symlink escape can no longer slip the match.
     """
     manifest = run_dir / "manifest.yaml"
     if not manifest.exists():
@@ -2073,12 +2144,12 @@ def _touches_outside_allowed_paths(event_or_command, run_dir: Path) -> bool:
     if not candidates:
         return False
 
+    repo_root = run_dir.parent.parent  # .agent-runs/<run-id> -> repo root
     for raw in candidates:
-        normalized = raw.replace("\\", "/").lstrip("./")
-        if not any(
-            normalized == item.rstrip("/") or normalized.startswith(item.rstrip("/") + "/")
-            for item in allowed
-        ):
+        rel, escaped = _relativize_write_candidate(raw, repo_root)
+        if escaped:
+            return True
+        if not _rel_under_allowed(rel, allowed):
             return True
     return False
 
