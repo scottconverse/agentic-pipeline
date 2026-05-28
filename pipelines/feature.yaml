@@ -21,8 +21,7 @@ stages:
 
   # v1.2.0 hardening: priority-drift + manifest-integrity gates run
   # AFTER the human APPROVE on the manifest and BEFORE researcher
-  # spends a model call. v1.2.1 adds check_autonomous_mode.py to the
-  # preflight bundle.
+  # spends a model call.
   - name: preflight
     role: pipeline
     command: python scripts/policy/run_preflight.py --run {run_id}
