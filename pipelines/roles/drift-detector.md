@@ -32,6 +32,15 @@ Write **`.agent-runs/<run-id>/drift-report.md`** with these sections:
 
    This line MUST appear exactly once. The numbers must add up against the items reported in §3–§6.
 
+   **Also emit this machine-verdict block (v3.0.0).** It is invisible in rendered markdown and `auto_promote.py` parses it in *preference* to the prose line, so a reworded or restyled count line can never cause a false stop. Emit both — the prose line for humans, the block for the gate:
+
+   ```
+   <!-- PIPELINE-VERDICT:drift
+   total: <total>
+   blocker: <blocker>
+   -->
+   ```
+
 3. **Contract drift** — manifest fields vs final state. For each:
    - **`goal` vs shipped behavior.** Does the assembled code/docs actually do what `manifest.goal` says? Cite the file:line where the goal's user-facing intent is implemented. If you cannot find an implementation that matches the goal, that is drift.
    - **`expected_outputs` vs reality.** For every item in `manifest.expected_outputs`, locate the matching artifact and verify substance — not just file existence. "An HTTP endpoint returns 200" requires reading the route handler, not finding a file. "A test asserts X" requires reading the test body, not finding a test name.
