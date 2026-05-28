@@ -293,3 +293,117 @@ def test_auto_promote_main_promotes_docs_only_run_end_to_end(
     decision = (run_dir / "manager-decision.md").read_text(encoding="utf-8")
     assert "**Decision: PROMOTE**" in decision
     assert "vacuous" not in decision.lower() or "out of scope" in decision.lower()
+
+
+# ---------------------------------------------------------------------------
+# v3.0.0 (Opus 4.8 retarget) — tolerant + structured count parsing.
+#
+# A more capable, more verbose model under effort=high may re-punctuate,
+# reorder, or restyle a count line. These guard the three resolver tiers:
+# legacy exact line still parses (back-compat), an explicit machine verdict
+# block is honored, tolerant prose still parses, MET vs NOT MET is never
+# confused, and unparseable/inconsistent input still fails closed.
+# ---------------------------------------------------------------------------
+
+from scripts.auto_promote import _check_critic, _check_drift, _check_verifier
+
+
+def _w(run_dir: Path, name: str, text: str) -> None:
+    (run_dir / name).write_text(text, encoding="utf-8")
+
+
+def test_verifier_legacy_exact_line_still_parses(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _w(run_dir, "verifier-report.md",
+       "**Criteria: 10 total, 8 MET, 0 PARTIAL, 0 NOT MET, 2 NOT APPLICABLE**")
+    r = _check_verifier(run_dir)
+    assert r.passed
+    assert "exact count line" in r.evidence
+
+
+def test_verifier_machine_verdict_block_preferred(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _w(run_dir, "verifier-report.md",
+       "Prose with no recognizable count line whatsoever.\n"
+       "<!-- PIPELINE-VERDICT:verifier\n"
+       "total: 6\nmet: 6\npartial: 0\nnot_met: 0\nnot_applicable: 0\n-->\n")
+    r = _check_verifier(run_dir)
+    assert r.passed
+    assert "machine verdict block" in r.evidence
+
+
+def test_verifier_tolerant_scan_handles_rephrased_line(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    # bold-colon variant, em-dash, extra spaces, NA moved earlier
+    _w(run_dir, "verifier-report.md",
+       "**Criteria:**  10 total —  2 NOT APPLICABLE,  8 MET,  0 PARTIAL,  0 NOT MET")
+    r = _check_verifier(run_dir)
+    assert r.passed
+    assert "tolerant count scan" in r.evidence
+
+
+def test_verifier_tolerant_does_not_confuse_met_and_not_met(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    # NOT MET listed before MET; must read met=8 (consistent) and not_met=2
+    _w(run_dir, "verifier-report.md",
+       "Criteria: 10 total, 2 NOT MET, 8 MET, 0 PARTIAL, 0 NOT APPLICABLE")
+    r = _check_verifier(run_dir)
+    assert not r.passed
+    assert "2 NOT MET" in r.evidence  # not "8 NOT MET" — proves no confusion
+
+
+def test_critic_tolerant_scan_rephrased(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _w(run_dir, "critic-report.md",
+       "Findings — 5 total: 0 blocker, 0 critical, 3 major, 2 minor")
+    r = _check_critic(run_dir)
+    assert r.passed
+    assert "tolerant count scan" in r.evidence
+
+
+def test_critic_machine_verdict_block(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _w(run_dir, "critic-report.md",
+       "<!-- PIPELINE-VERDICT:critic\n"
+       "total: 2\nblocker: 0\ncritical: 0\nmajor: 1\nminor: 1\n-->")
+    r = _check_critic(run_dir)
+    assert r.passed
+    assert "machine verdict block" in r.evidence
+
+
+def test_drift_tolerant_and_machine_block(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _w(run_dir, "drift-report.md", "Drift: 3 total, 0 blocker")
+    assert _check_drift(run_dir).passed
+    _w(run_dir, "drift-report.md",
+       "<!-- PIPELINE-VERDICT:drift\ntotal: 0\nblocker: 0\n-->")
+    r = _check_drift(run_dir)
+    assert r.passed
+    assert "machine verdict block" in r.evidence
+
+
+def test_verifier_unparseable_report_fails_closed(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _w(run_dir, "verifier-report.md",
+       "The verifier looked at everything and it all seemed fine to me.")
+    r = _check_verifier(run_dir)
+    assert not r.passed
+    assert "no parseable Criteria counts" in r.evidence
+
+
+def test_critic_inconsistent_counts_fail(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _w(run_dir, "critic-report.md",
+       "**Findings: 5 total, 0 blocker, 0 critical, 1 major, 1 minor**")  # 5 != 2
+    r = _check_critic(run_dir)
+    assert not r.passed
+    assert "inconsistent" in r.evidence

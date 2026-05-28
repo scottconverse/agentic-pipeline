@@ -83,6 +83,128 @@ TEST_PASS_PATTERNS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# v3.0.0 (Opus 4.8 retarget) — tolerant + structured verdict parsing.
+#
+# The legacy single-line regexes above remain the fast path and keep
+# byte-for-byte back-compat (every prior run and test parses unchanged).
+# But a more capable, more verbose model under effort=high is *more* likely
+# to elaborate or re-punctuate a count line and silently miss the exact
+# regex — collapsing auto-promote to the manual gate (the v1.3.1 false-stop
+# class recurring). Two additional tiers close that, in priority order:
+#
+#   Tier 1 (preferred): an explicit machine verdict block a stage can emit,
+#     invisible in rendered markdown:
+#         <!-- PIPELINE-VERDICT:verifier
+#         total: 10
+#         met: 8
+#         partial: 0
+#         not_met: 0
+#         not_applicable: 2
+#         -->
+#   Tier 2: the legacy exact bolded count line (unchanged).
+#   Tier 3: a tolerant prose scan that extracts "<int> <label>" tokens from
+#     the line naming the stage, tolerating bold/spacing/ordering/punctuation.
+#
+# Conservative-by-default is preserved: if no tier yields a complete,
+# internally-consistent count, the condition fails to the manual gate. The
+# total-equals-sum reconciliation below catches any mis-extraction.
+# ---------------------------------------------------------------------------
+
+# (field_key, label_regex) — label_regex is matched count-first as
+# `(\d+)\s+<label>`. NOT MET / NOT APPLICABLE carry the leading NOT so the
+# bare-MET pattern never captures them (no digit directly precedes "MET" in
+# "NOT MET").
+_VERIFIER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("total", "total"),
+    ("met", "MET"),
+    ("partial", "PARTIAL"),
+    ("not_met", r"NOT\s+MET"),
+    ("not_applicable", r"NOT\s+APPLICABLE"),
+)
+_CRITIC_FIELDS: tuple[tuple[str, str], ...] = (
+    ("total", "total"),
+    ("blocker", "blocker"),
+    ("critical", "critical"),
+    ("major", "major"),
+    ("minor", "minor"),
+)
+_DRIFT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("total", "total"),
+    ("blocker", "blocker"),
+)
+
+
+def _parse_verdict_block(text: str, stage: str) -> dict[str, int] | None:
+    """Tier 1: parse an explicit `<!-- PIPELINE-VERDICT:<stage> ... -->`
+    block into a {key: int} dict. Returns None when absent or empty."""
+    m = re.search(
+        rf"<!--\s*PIPELINE-VERDICT:{re.escape(stage)}\b(?P<body>.*?)-->",
+        text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not m:
+        return None
+    counts: dict[str, int] = {}
+    for line in m.group("body").splitlines():
+        km = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\d+)\s*$", line)
+        if km:
+            counts[km.group(1).lower()] = int(km.group(2))
+    return counts or None
+
+
+def _tolerant_count_line(
+    text: str, marker: str, fields: tuple[tuple[str, str], ...]
+) -> dict[str, int] | None:
+    """Tier 3: find the line naming `marker` (case-insensitive) and extract
+    `<int> <label>` for each field. Returns the dict only when every field
+    resolves on a single marker line; else None (conservative)."""
+    marker_re = re.compile(rf"\b{marker}\b", re.IGNORECASE)
+    field_res = [
+        (field, re.compile(rf"(\d+)\s+{label}\b", re.IGNORECASE))
+        for field, label in fields
+    ]
+    for raw in text.splitlines():
+        if not marker_re.search(raw):
+            continue
+        got: dict[str, int] = {}
+        for field, fre in field_res:
+            fm = fre.search(raw)
+            if fm:
+                got[field] = int(fm.group(1))
+        if len(got) == len(field_res):
+            return got
+    return None
+
+
+def _resolve_counts(
+    text: str,
+    *,
+    stage: str,
+    marker: str,
+    fields: tuple[tuple[str, str], ...],
+    legacy_re: re.Pattern[str],
+    legacy_keys: tuple[str, ...],
+) -> tuple[dict[str, int] | None, str]:
+    """Three-tier resolver. Returns (counts, source_label) on success or
+    (None, reason) on failure. `legacy_keys` maps the legacy regex groups
+    to field keys in order."""
+    keys = tuple(field for field, _ in fields)
+    block = _parse_verdict_block(text, stage)
+    if block is not None and all(k in block for k in keys):
+        return {k: block[k] for k in keys}, "machine verdict block"
+    m = legacy_re.search(text)
+    if m:
+        return {k: int(v) for k, v in zip(legacy_keys, m.groups())}, "exact count line"
+    tol = _tolerant_count_line(text, marker, fields)
+    if tol is not None:
+        return tol, "tolerant count scan"
+    return None, (
+        f"no parseable {marker} counts (looked for a PIPELINE-VERDICT:{stage} block, "
+        f"the exact `**{marker}: ...**` line, and a tolerant `<n> <label>` scan)"
+    )
+
+
 REPO_ROOT = find_repo_root(__file__)
 RUN_DIR_BASE = REPO_ROOT / ".agent-runs"
 
@@ -103,31 +225,35 @@ def _check_verifier(run_dir: Path) -> ConditionResult:
     if not path.exists():
         return ConditionResult("verifier-clean", False, f"{path.name} missing")
     text = path.read_text(encoding="utf-8", errors="replace")
-    m = CRITERIA_LINE_RE.search(text)
-    if not m:
-        return ConditionResult(
-            "verifier-clean",
-            False,
-            "verifier-report.md missing or malformed §0 criteria count line "
-            "(expected `**Criteria: T total, M MET, P PARTIAL, N NOT MET, A NOT APPLICABLE**`)",
-        )
-    total, met, partial, not_met, na = (int(x) for x in m.groups())
+    counts, source = _resolve_counts(
+        text,
+        stage="verifier",
+        marker="Criteria",
+        fields=_VERIFIER_FIELDS,
+        legacy_re=CRITERIA_LINE_RE,
+        legacy_keys=("total", "met", "partial", "not_met", "not_applicable"),
+    )
+    if counts is None:
+        return ConditionResult("verifier-clean", False, f"verifier-report.md: {source}")
+    total, met, partial = counts["total"], counts["met"], counts["partial"]
+    not_met, na = counts["not_met"], counts["not_applicable"]
     if total != met + partial + not_met + na:
         return ConditionResult(
             "verifier-clean",
             False,
-            f"verifier count line inconsistent: {total} total != {met}+{partial}+{not_met}+{na}",
+            f"verifier count inconsistent ({source}): {total} total != {met}+{partial}+{not_met}+{na}",
         )
     if not_met != 0 or partial != 0:
         return ConditionResult(
             "verifier-clean",
             False,
-            f"verifier reports {not_met} NOT MET and {partial} PARTIAL criterion(a). Auto-promote requires zero of each.",
+            f"verifier reports {not_met} NOT MET and {partial} PARTIAL criterion(a) ({source}). "
+            "Auto-promote requires zero of each.",
         )
     return ConditionResult(
         "verifier-clean",
         True,
-        f"verifier-report.md §0: {total} total criteria, {met} MET, {na} NOT APPLICABLE, 0 PARTIAL, 0 NOT MET.",
+        f"verifier-report.md [{source}]: {total} total criteria, {met} MET, {na} NOT APPLICABLE, 0 PARTIAL, 0 NOT MET.",
     )
 
 
@@ -136,31 +262,35 @@ def _check_critic(run_dir: Path) -> ConditionResult:
     if not path.exists():
         return ConditionResult("critic-clean", False, f"{path.name} missing")
     text = path.read_text(encoding="utf-8", errors="replace")
-    m = FINDINGS_LINE_RE.search(text)
-    if not m:
-        return ConditionResult(
-            "critic-clean",
-            False,
-            "critic-report.md missing or malformed §2 findings count line "
-            "(expected `**Findings: T total, B blocker, C critical, M major, N minor**`)",
-        )
-    total, blocker, critical, major, minor = (int(x) for x in m.groups())
+    counts, source = _resolve_counts(
+        text,
+        stage="critic",
+        marker="Findings",
+        fields=_CRITIC_FIELDS,
+        legacy_re=FINDINGS_LINE_RE,
+        legacy_keys=("total", "blocker", "critical", "major", "minor"),
+    )
+    if counts is None:
+        return ConditionResult("critic-clean", False, f"critic-report.md: {source}")
+    total, blocker, critical = counts["total"], counts["blocker"], counts["critical"]
+    major, minor = counts["major"], counts["minor"]
     if total != blocker + critical + major + minor:
         return ConditionResult(
             "critic-clean",
             False,
-            f"critic count line inconsistent: {total} total != {blocker}+{critical}+{major}+{minor}",
+            f"critic count inconsistent ({source}): {total} total != {blocker}+{critical}+{major}+{minor}",
         )
     if blocker != 0 or critical != 0:
         return ConditionResult(
             "critic-clean",
             False,
-            f"critic reports {blocker} blocker and {critical} critical finding(s). Auto-promote requires zero of each.",
+            f"critic reports {blocker} blocker and {critical} critical finding(s) ({source}). "
+            "Auto-promote requires zero of each.",
         )
     return ConditionResult(
         "critic-clean",
         True,
-        f"critic-report.md §2: {total} findings ({blocker} blocker, {critical} critical, {major} major, {minor} minor).",
+        f"critic-report.md [{source}]: {total} findings ({blocker} blocker, {critical} critical, {major} major, {minor} minor).",
     )
 
 
@@ -169,25 +299,28 @@ def _check_drift(run_dir: Path) -> ConditionResult:
     if not path.exists():
         return ConditionResult("drift-clean", False, f"{path.name} missing")
     text = path.read_text(encoding="utf-8", errors="replace")
-    m = DRIFT_LINE_RE.search(text)
-    if not m:
-        return ConditionResult(
-            "drift-clean",
-            False,
-            "drift-report.md missing or malformed §2 drift count line "
-            "(expected `**Drift: T total, B blocker**`)",
-        )
-    total, blocker = (int(x) for x in m.groups())
+    counts, source = _resolve_counts(
+        text,
+        stage="drift",
+        marker="Drift",
+        fields=_DRIFT_FIELDS,
+        legacy_re=DRIFT_LINE_RE,
+        legacy_keys=("total", "blocker"),
+    )
+    if counts is None:
+        return ConditionResult("drift-clean", False, f"drift-report.md: {source}")
+    total, blocker = counts["total"], counts["blocker"]
     if blocker != 0:
         return ConditionResult(
             "drift-clean",
             False,
-            f"drift-detector reports {blocker} blocker drift item(s). Auto-promote requires zero blocker drift.",
+            f"drift-detector reports {blocker} blocker drift item(s) ({source}). "
+            "Auto-promote requires zero blocker drift.",
         )
     return ConditionResult(
         "drift-clean",
         True,
-        f"drift-report.md §2: {total} drift item(s), 0 blocker.",
+        f"drift-report.md [{source}]: {total} drift item(s), 0 blocker.",
     )
 
 
