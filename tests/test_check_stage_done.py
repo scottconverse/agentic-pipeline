@@ -96,3 +96,40 @@ def test_pipeline_owned_stages_skipped(tmp_path: Path) -> None:
     missing, found, _ = csd.evaluate("test-run", repo)
     assert missing == []
     assert "policy" not in missing  # was never expected
+
+
+# v3.0.0 (Opus 4.8 retarget): tolerant STAGE_DONE marker. A more verbose
+# model may append context, drop the colon, or vary case/separator. Every
+# legacy `STAGE_DONE: <stage>` line still matches; these add the tolerant
+# variants. Over-matching only adds spurious names to `found` (ignored) and
+# can never drop a required stage, so it cannot cause a false PASS.
+
+
+def test_tolerant_markers_with_trailing_text_no_colon_and_case(tmp_path: Path) -> None:
+    repo = _setup_run(
+        tmp_path,
+        log_content=(
+            "STAGE_DONE: manifest -- manifest.yaml drafted (6045 bytes)\n"  # trailing text
+            "STAGE_DONE: research  research.md written\n"                    # trailing text
+            "STAGE_DONE execute\n"                                          # no colon
+            "stage-done: plan\n"                                            # case + separator
+        ),
+    )
+    missing, found, _ = csd.evaluate("test-run", repo)
+    assert missing == []
+    assert {"manifest", "research", "plan", "execute"} <= set(found)
+
+
+def test_unrelated_prose_does_not_satisfy_a_required_stage(tmp_path: Path) -> None:
+    """A line that merely starts 'stage done ...' with a non-stage token must
+    not satisfy a required stage — guards the tolerant pattern from false PASS."""
+    repo = _setup_run(
+        tmp_path,
+        stages=[
+            {"name": "manifest", "role": "human"},
+            {"name": "execute", "role": "executor"},
+        ],
+        log_content="STAGE_DONE: manifest\nstage done by the team for the day\n",
+    )
+    missing, found, _ = csd.evaluate("test-run", repo)
+    assert "execute" in missing  # never satisfied by the unrelated prose line
