@@ -2265,11 +2265,11 @@ def record_hook_memory(repo_root: Path, event_name: str, message: str, metadata:
         "message": truncated,
         "metadata": merged_metadata,
     }
-    # v3.0.0 WS-6: sidecar every per-run memory write. Only the handoff is
-    # verified on re-inject (read_memory_handoff); the JSONL sidecars are not
-    # read back yet. They are written unconditionally to hold one invariant —
-    # every memory file on disk has a current sidecar — so the set stays
-    # consistent and any reader can trust a sidecar's presence.
+    # v3.0.0 WS-6: sidecar each JSONL memory-record write here. Only the
+    # handoff is verified on re-inject (read_memory_handoff); these JSONL
+    # sidecars are written but not read back yet — kept current so the record
+    # files (events/turns/decisions/open_loops) carry a sidecar for any later
+    # verifier. memory_probe.log is a debug breadcrumb and stays unsidecared.
     target_file = memory_dir / _memory_file_for_event(event_name)
     append_jsonl(target_file, record)
     _write_memory_sidecar(target_file)
