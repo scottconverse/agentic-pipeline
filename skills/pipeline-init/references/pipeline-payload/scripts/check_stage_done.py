@@ -58,7 +58,19 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - installed layout
     from scripts.policy_utils import find_repo_root
 
-STAGE_DONE_PATTERN = re.compile(r"^\s*STAGE_DONE:\s*(?P<stage>[a-zA-Z][a-zA-Z0-9_\-]*)\s*$")
+# v3.0.0 (Opus 4.8 retarget): tolerant superset of the legacy
+# `^\s*STAGE_DONE:\s*<stage>\s*$` marker. The legacy form required the colon
+# AND end-anchored after the stage name, so a more verbose model appending
+# context ("STAGE_DONE: research -- research.md written") silently failed the
+# check even though the stage finished. The tolerant form keeps the
+# line-start anchor (so unrelated prose never matches) and the stage-name
+# capture, but accepts case variation, an optional separator, and trailing
+# text after the stage name. Every string the strict form matched still
+# matches; the captured stage must still equal a declared stage to count.
+STAGE_DONE_PATTERN = re.compile(
+    r"^\s*stage[_\-\s]?done\s*[:\-]?\s*(?P<stage>[a-zA-Z][a-zA-Z0-9_\-]*)\b",
+    re.IGNORECASE,
+)
 
 # Pipeline stages owned by LLM roles (vs the orchestrator's "pipeline" role).
 # Only these need STAGE_DONE; pipeline-owned stages don't (the orchestrator
