@@ -418,6 +418,52 @@ def test_pre_tool_use_denies_write_tool_with_file_path_outside_allowed_paths(tmp
     assert "outside manifest allowed_paths" in payload["hookSpecificOutput"]["permissionDecisionReason"]
 
 
+# v3.0.0 (Opus 4.8 retarget) — allowed_paths escape hardening (P-1').
+# The prior `raw.replace("\\","/").lstrip("./")` prefix check let a path that
+# merely *started with* an allowed prefix through, so `src/../../etc/passwd`
+# was treated as in-scope. These pin the lexical resolution that closes it.
+from hooks import hook_utils  # noqa: E402
+
+
+def _run_with_allowed(tmp_path: Path, allowed_block: str) -> Path:
+    run = tmp_path / ".agent-runs" / "escape-run"
+    run.mkdir(parents=True)
+    (run / "manifest.yaml").write_text(allowed_block, encoding="utf-8")
+    return run
+
+
+_ALLOWED_SRC = "allowed_paths:\n  - src/\nforbidden_paths: []\n"
+
+
+def test_touches_outside_blocks_dotdot_traversal_escape(tmp_path: Path) -> None:
+    run = _run_with_allowed(tmp_path, _ALLOWED_SRC)
+    ev = {"tool_name": "Write",
+          "tool_input": {"file_path": "src/../../../../etc/passwd", "content": "x"}}
+    assert hook_utils._touches_outside_allowed_paths(ev, run) is True
+
+
+def test_touches_outside_blocks_within_repo_traversal_out_of_allowed(tmp_path: Path) -> None:
+    # Stays inside the repo but climbs out of src/ into secrets/.
+    run = _run_with_allowed(tmp_path, _ALLOWED_SRC)
+    ev = {"tool_name": "Write",
+          "tool_input": {"file_path": "src/../secrets/key.pem", "content": "x"}}
+    assert hook_utils._touches_outside_allowed_paths(ev, run) is True
+
+
+def test_touches_outside_blocks_absolute_outside_repo(tmp_path: Path) -> None:
+    run = _run_with_allowed(tmp_path, _ALLOWED_SRC)
+    ev = {"tool_name": "Write",
+          "tool_input": {"file_path": "/tmp/evil.txt", "content": "x"}}
+    assert hook_utils._touches_outside_allowed_paths(ev, run) is True
+
+
+def test_touches_outside_allows_in_scope_relative_write(tmp_path: Path) -> None:
+    run = _run_with_allowed(tmp_path, _ALLOWED_SRC)
+    ev = {"tool_name": "Write",
+          "tool_input": {"file_path": "src/module/x.py", "content": "x"}}
+    assert hook_utils._touches_outside_allowed_paths(ev, run) is False
+
+
 def test_pre_tool_use_denies_edit_tool_with_file_path_outside_allowed_paths(tmp_path: Path, capsys, monkeypatch) -> None:
     """Same fix - Edit tool also exposes file_path."""
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)

@@ -237,6 +237,20 @@ def main() -> int:
     violations: list[tuple[str, str]] = []
     if changed:
         for path in changed:
+            # v3.0.0 (Opus 4.8) defense-in-depth: `git diff --name-only`
+            # emits canonical repo-relative paths, so an absolute path or a
+            # `..` segment here is anomalous. Treat it as out of scope rather
+            # than trusting the prefix string match (mirrors the PreToolUse
+            # escape hardening in hook_utils).
+            norm = path.replace("\\", "/")
+            is_abs = norm.startswith("/") or (
+                len(norm) >= 2 and norm[0].isalpha() and norm[1] == ":"
+            )
+            if is_abs or ".." in norm.split("/"):
+                violations.append(
+                    (path, "anomalous path (absolute or `..` traversal); not a canonical repo-relative diff entry")
+                )
+                continue
             if forbidden and _is_under(path, forbidden):
                 violations.append((path, "matches forbidden_paths"))
                 continue
