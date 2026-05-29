@@ -265,6 +265,58 @@ def test_run_skill_does_not_require_grant():
 
 
 # ---------------------------------------------------------------------------
+# WS-4 parallel independent stages: run.md Step 7 fans out the independent
+# trio verify / drift-detect / critique as a single parallel spawn while
+# preserving the auto-promote all-three-present gate, fail-stop, resume, and
+# the critic's item-4 context block.
+# ---------------------------------------------------------------------------
+
+RUN_MD = REPO_ROOT / "skills" / "run" / "references" / "run.md"
+
+
+def test_run_md_fans_out_independent_trio_in_single_spawn():
+    """run.md Step 7 must spawn verify/drift-detect/critique together in one
+    orchestrator turn rather than as three sequential round-trips."""
+    text = _read(RUN_MD)
+    assert "Parallel fan-out exception" in text, (
+        "run.md Step 7 must document the verify/drift-detect/critique "
+        "parallel fan-out exception."
+    )
+    for stage in ("`verify`", "`drift-detect`", "`critique`"):
+        assert stage in text, f"fan-out exception must name the {stage} stage."
+    assert "Spawn all three in a single turn" in text
+    assert "in one message" in text
+
+
+def test_run_md_fan_out_preserves_all_three_present_gate():
+    """Parallelism is at the spawn level only: auto-promote still requires
+    all three reports present before it promotes."""
+    text = _read(RUN_MD)
+    assert "this parallelizes the spawn, not the gate" in text, (
+        "the fan-out must state it parallelizes the spawn, not the gate."
+    )
+    for report in ("verifier-report.md", "drift-report.md", "critic-report.md"):
+        assert report in text, f"gate must still reference {report}."
+    assert "all present before it promotes" in text
+
+
+def test_run_md_fan_out_is_fail_stop_and_resume_aware():
+    """Any missing/empty member stops the run (no partial promotion), and a
+    resumed run re-spawns only the still-absent members of the trio."""
+    text = _read(RUN_MD)
+    assert "never continue on a partial trio" in text
+    assert "spawn only the members whose artifact is still absent" in text
+
+
+def test_run_md_fan_out_keeps_critic_item4_block():
+    """Fanning the trio out in parallel must not change what the critic
+    receives — it still gets whatever context block item 4 prescribes,
+    preserving the critic full-block carve-out."""
+    text = _read(RUN_MD)
+    assert "the `critic` still receives whatever block item 4 prescribes" in text
+
+
+# ---------------------------------------------------------------------------
 # Pipeline-init skill: uses chat-based gate keyword grammar (v2.2.1 reversal)
 # ---------------------------------------------------------------------------
 #

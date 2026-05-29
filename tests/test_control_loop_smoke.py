@@ -129,6 +129,148 @@ def test_stop_validator_active_state_files_filters_inactive(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
+# stop_validator: WS-4 single-read fix — validate_all_active_stops must read
+# and parse each active-control-state.md exactly once per call (n reads, not
+# 2n), carrying active-ness out via StopValidation.active rather than
+# re-reading the file to build the active filter.
+# ---------------------------------------------------------------------------
+
+
+_ACTIVE_MUST_CONTINUE = (
+    "active_run: true\n"
+    "current_stage: plan\n"
+    "last_completed_gate: manifest\n"
+    "next_required_action: write plan.md\n"
+    "stop_condition: none\n"
+    "final_response_allowed: false\n"
+    "continuing_to: research\n"
+)
+
+_INACTIVE_DONE = (
+    "active_run: false\n"
+    "current_stage: manager\n"
+    "last_completed_gate: manager\n"
+    "next_required_action: none\n"
+    "stop_condition: human_approval_gate\n"
+    "final_response_allowed: true\n"
+    "continuing_to: none\n"
+)
+
+# active_run: true but stop_condition=none + final_response_allowed=true is a
+# validation failure; the state still has active_run=true, so it must count as
+# active (the pre-fix re-read counted it; the carried field must too).
+_ACTIVE_BUT_INVALID = (
+    "active_run: true\n"
+    "current_stage: plan\n"
+    "last_completed_gate: manifest\n"
+    "next_required_action: write plan.md\n"
+    "stop_condition: none\n"
+    "final_response_allowed: true\n"
+    "continuing_to: research\n"
+)
+
+
+def _write_state(run_dir: Path, name: str, body: str) -> Path:
+    sub = run_dir / name
+    sub.mkdir()
+    path = sub / "active-control-state.md"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_validate_all_active_stops_parses_each_file_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre-fix, validate_all_active_stops parsed every state file twice — once
+    in validate_state_file and again in the active comprehension (2n parses).
+    The fix carries active-ness on StopValidation.active, so each file is
+    parsed exactly once: n parses for n files."""
+    import stop_validator as sv
+
+    _write_state(tmp_path, "run-a", _ACTIVE_MUST_CONTINUE)
+    _write_state(tmp_path, "run-b", _INACTIVE_DONE)
+    _write_state(tmp_path, "run-c", _ACTIVE_MUST_CONTINUE)
+
+    calls = {"n": 0}
+    real_parse = sv.parse_control_state
+
+    def counting_parse(text: str):
+        calls["n"] += 1
+        return real_parse(text)
+
+    monkeypatch.setattr(sv, "parse_control_state", counting_parse)
+
+    sv.validate_all_active_stops(tmp_path)
+
+    assert calls["n"] == 3, (
+        f"expected one parse per state file (3), got {calls['n']} — "
+        "the double-read regressed"
+    )
+
+
+def test_validate_state_file_sets_active_field(tmp_path: Path) -> None:
+    import stop_validator as sv
+
+    active_path = _write_state(tmp_path, "active", _ACTIVE_MUST_CONTINUE)
+    res = sv.validate_state_file(active_path)
+    assert res.active is True
+    assert res.allowed is False  # active run must continue
+
+    inactive_path = _write_state(tmp_path, "inactive", _INACTIVE_DONE)
+    res2 = sv.validate_state_file(inactive_path)
+    assert res2.active is False
+    assert res2.allowed is True  # inactive run
+
+    invalid_path = _write_state(tmp_path, "invalid", _ACTIVE_BUT_INVALID)
+    res3 = sv.validate_state_file(invalid_path)
+    assert res3.allowed is False  # validation failed
+    assert res3.active is True, (
+        "an active_run=true state must report active even when control-state "
+        "validation fails, matching the pre-fix re-read behaviour"
+    )
+
+
+def test_validate_all_active_stops_verdicts_unchanged_for_inactive(
+    tmp_path: Path,
+) -> None:
+    import stop_validator as sv
+
+    _write_state(tmp_path, "run-a", _INACTIVE_DONE)
+    _write_state(tmp_path, "run-b", _INACTIVE_DONE)
+
+    # No active run present + require_active_run → the sentinel verdict.
+    sentinel = sv.validate_all_active_stops(tmp_path, require_active_run=True)
+    assert len(sentinel) == 1
+    assert sentinel[0].allowed is False
+    assert "no active run found" in sentinel[0].reason
+
+    # Without require_active_run → both inactive results, all allowed.
+    results = sv.validate_all_active_stops(tmp_path, require_active_run=False)
+    assert len(results) == 2
+    assert all(r.allowed for r in results)
+    assert all(r.active is False for r in results)
+
+
+def test_validate_all_active_stops_verdicts_unchanged_for_mixed(
+    tmp_path: Path,
+) -> None:
+    import stop_validator as sv
+
+    _write_state(tmp_path, "run-a", _ACTIVE_MUST_CONTINUE)
+    _write_state(tmp_path, "run-b", _INACTIVE_DONE)
+    _write_state(tmp_path, "run-c", _ACTIVE_MUST_CONTINUE)
+
+    # An active run is present, so require_active_run returns every result
+    # rather than the sentinel — the active filter found it via the carried
+    # field, not a re-read.
+    results = sv.validate_all_active_stops(tmp_path, require_active_run=True)
+    assert len(results) == 3
+    blocked = [r for r in results if not r.allowed]
+    assert len(blocked) == 2  # the two active must-continue runs
+    assert all(b.active for b in blocked)
+
+
+# ---------------------------------------------------------------------------
 # final_response_gate: evaluate against an empty run dir
 # ---------------------------------------------------------------------------
 

@@ -106,6 +106,13 @@ Read `.pipelines/<pipeline_type>.yaml`. For each stage in order:
    - After subagent returns, verify the artifact exists and is non-empty (`test -s` via Bash).
    - On missing/empty artifact: log `STAGE_FAILED: <name> (artifact not produced)`, surface failure, STOP.
    - On success: log `STAGE_DONE: <name>` and continue.
+5. **Parallel fan-out exception — the independent trio `verify` / `drift-detect` / `critique` (applies before items 1–4 for these three stages).** All three consume the same prior artifacts and write a disjoint report (`verifier-report.md`, `drift-report.md`, `critic-report.md`); none reads another's output, so they need not run in sequence. When the loop reaches `verify` and **all three** are still pending, handle them together instead of one at a time:
+   - **Spawn all three in a single turn** — issue the three `Agent` calls together in one message, each built exactly as item 4 describes (role file + run-context block + run instructions, with the same per-role context rules, so the `critic` still receives whatever block item 4 prescribes for it).
+   - **Wait for all three to return**, then verify each artifact exists and is non-empty (`test -s`).
+   - On success, log `STAGE_DONE: <name>` for each in stage order, then **advance the loop past all three** — do not re-enter `drift-detect` or `critique` individually.
+   - If **any** member's artifact is missing/empty, log `STAGE_FAILED: <name> (artifact not produced)` for each that failed, surface the failure, and STOP — never continue on a partial trio.
+   - **Resume-aware:** on a resumed run, spawn only the members whose artifact is still absent (item 1's skip rule applies per-artifact); if just one remains, it is an ordinary single spawn.
+   - **Gate unchanged — this parallelizes the spawn, not the gate.** `auto-promote` still requires `verifier-report.md`, `drift-report.md`, and `critic-report.md` all present before it promotes, exactly as in the sequential path.
 
 After each stage, append a single line to `.agent-runs/<run_id>/run.log`:
 ```
