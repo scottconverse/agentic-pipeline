@@ -428,7 +428,9 @@ Examples of project-specific checks worth adding:
 
 ## 7. The judge layer (v0.4) — real-time action supervision
 
-The judge layer is **opt-in supervision inside the executor stage**. It is **not a new pipeline stage**. When `.pipelines/action-classification.yaml` exists in your project, the orchestrator uses Handler 3a (instead of the standard Handler 3) for the executor stage. Handler 3a wraps every executor tool call in a **classify → judge → execute** inner loop. The executor's role file is unchanged; the executor does not know the judge exists.
+The judge layer is **opt-in supervision inside the executor stage**. It is **not a new pipeline stage**. When `.pipelines/action-classification.yaml` exists in your project, the orchestrator runs the executor stage as a **propose-execute loop** (the judged-executor handler in `run.md` Step 7a) instead of the standard single-spawn handler.
+
+The interception happens at the **orchestrator's altitude, across spawns** — not per tool call. The platform does not let the orchestrator intercept the individual tool calls of a running subagent: a subagent runs autonomously to completion and cannot spawn the judge itself. So the executor performs reversible local work directly but **stops and writes an action proposal** (`pending-action.yaml`) for any external-facing or high-risk action and returns; the orchestrator then classifies the proposal, spawns the judge with isolated context, parses the verdict, and executes, revises, blocks, or escalates. The executor's role file carries the matching stop-and-propose protocol (gated on the same file's existence), and a non-bypassable PreToolUse hook hard-denies a direct external-facing or release-class attempt with `JUDGE_REVIEW_REQUIRED` so the protocol cannot be skipped.
 
 ### Why this is here
 
@@ -436,11 +438,13 @@ Prompts don't hold across long context windows. The most expensive class of agen
 
 The architectural fix is a second agent (the judge) whose sole loyalty is the manifest, evaluated in **context isolation** from the executor's reasoning chain. The judge cannot be persuaded by the executor's logic because it never sees it. It receives only the manifest, the action policy, prior judge decisions, and the structured action proposal.
 
-### The classify → judge → execute inner loop
+### The classify → judge → execute loop
+
+This loop runs at the orchestrator's altitude. The executor returns an action proposal (it does not call the judge or the action itself); the orchestrator classifies, judges, and on `revise` re-spawns the executor with the revision instruction.
 
 ```mermaid
 flowchart TB
-    Start([Executor proposes a tool call]) --> Classify[Classify against<br/>action-classification.yaml]
+    Start([Executor returns an action proposal]) --> Classify[Classify against<br/>action-classification.yaml]
     Classify --> Route{Action class?}
 
     Route -- read_only --> AutoLog1[Execute action<br/>+ log auto_allow]
@@ -462,7 +466,7 @@ flowchart TB
     HumanEscalate -- APPROVE --> ExecEscalated[Execute action<br/>+ log human_confirmed]
     HumanEscalate -- Block --> HaltHuman
 
-    Revise --> Retry[Executor produces<br/>revised proposal]
+    Revise --> Retry[Re-spawn executor with<br/>revision_instruction;<br/>executor returns revised proposal]
     Retry --> Classify
 
     AutoLog1 --> Continue([Continue executor loop])
@@ -530,6 +534,8 @@ flowchart LR
 
 This isolation is the mechanism. If the judge saw the executor's internal reasoning, it could be persuaded by the same chain of inferences that produced the over-broad action in the first place. Single-model-family correlated judgment defeats the purpose. Context isolation forces the judge to evaluate the action against the manifest only, using only what the executor cited as evidence.
 
+The isolation is **load-bearing safety, not an artifact of a context-size limit**. Now that a 1M-token shared context makes passing the executor's full reasoning chain to the judge technically free, it is tempting to share it "so the judge has more to work with." The orchestrator must not. The judge's entire value is that it cannot be talked into the action by the reasoning that produced it; sharing that reasoning would silently delete the defense while leaving the machinery in place. The isolation is preserved deliberately even when sharing is free.
+
 ### Artifacts produced
 
 Two new files land in the run directory when the judge layer is active:
@@ -543,8 +549,8 @@ A third internal directory holds per-action verdict files for replay and audit:
 
 ### When the judge is and isn't active
 
-- **`.pipelines/action-classification.yaml` exists in the project** → Handler 3a is used for the executor stage; the judge layer is active for that run.
-- **`.pipelines/action-classification.yaml` does not exist** → Handler 3 is used for the executor stage exactly as in v0.3 and earlier; the judge layer is inactive. No `judge-log.yaml` or `judge-metrics.yaml` is produced.
+- **`.pipelines/action-classification.yaml` exists in the project** → the judged-executor propose-execute handler (`run.md` Step 7a) is used for the executor stage; the judge layer is active for that run.
+- **`.pipelines/action-classification.yaml` does not exist** → the standard single-spawn executor handler is used exactly as in v0.3 and earlier; the judge layer is inactive. No `judge-log.yaml` or `judge-metrics.yaml` is produced, and the PreToolUse hook leaves external-facing actions at warn rather than redirecting them to the judge.
 
 The decision is made once at the start of the run. Adding or removing the file mid-run does not retroactively change a stage that has already completed; a resumed run picks up the on-disk state at resume time.
 

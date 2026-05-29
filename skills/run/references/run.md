@@ -90,6 +90,7 @@ Read `.pipelines/<pipeline_type>.yaml`. For each stage in order:
    - **Special case `auto-promote`**: exit 0 means ELIGIBLE (manager-decision.md was preset by auto_promote.py); exit 1 means NOT_ELIGIBLE (auto-promote-report.md names which conditions failed). Both advance the pipeline. Only exit 2 (run dir not found) is a real failure.
 3. **If `role: human`** with `gate: human_approval`, this is a mid-run gate. Fire Step 8 (plan gate) or Step 9 (manager gate) per the stage name.
 4. **Otherwise** (an agent role: `researcher`, `planner`, `test-writer`, `executor`, `verifier`, `drift-detector`, `critic`, `manager`), spawn a subagent via `Agent`:
+   - **Judged-executor branch:** if the role is `executor` AND `.pipelines/action-classification.yaml` exists in the project, do NOT use the single spawn below. Use the judged-executor handler in **Step 7a** instead — it runs a propose-execute loop that routes the executor's external-facing and high-risk actions through the judge. The other roles, and the executor when no `action-classification.yaml` exists, use the single spawn below unchanged.
    - Read `.pipelines/roles/<role>.md` in full.
    - Build the run-context block: manifest content + every prior stage's artifact file content (concatenated with `--- <filename> ---` separators).
    - Spawn description: `<role> stage for run <run-id>`.
@@ -102,6 +103,28 @@ After each stage, append a single line to `.agent-runs/<run_id>/run.log`:
 ```
 <ISO-timestamp> STAGE_DONE: <stage-name>
 ```
+
+### Step 7a — judged-executor handler (only when `.pipelines/action-classification.yaml` exists)
+
+This handler replaces the single executor spawn with an orchestrator-altitude **propose-execute loop**. The platform does not let the orchestrator intercept a running subagent's individual tool calls — a subagent runs to completion and cannot spawn the judge itself — so the judge is invoked between spawns, at the orchestrator's altitude. The executor does reversible local work directly; for any external-facing or high-risk action it stops, writes a proposal, and returns. The orchestrator then classifies, judges, and acts.
+
+Spawn the executor exactly as in Step 7 item 4 (role file + run context). The executor's role file carries the stop-and-propose protocol, so the spawned executor either returns `STAGE_DONE: execute` (finished — no external/high-risk action remained) or returns having written `.agent-runs/<run_id>/pending-action.yaml`. Loop:
+
+1. **Executor returns.** If `pending-action.yaml` does NOT exist and the executor logged `STAGE_DONE: execute`, the stage is done — go to step 8 (metrics) below.
+2. **Read the proposal** from `.agent-runs/<run_id>/pending-action.yaml`. It carries `action_id`, `tool`, `arguments`, `executor_justification`, and `executor_evidence`.
+3. **Classify** the action: `python scripts/classify_action.py` is the helper; classify `(tool, command)` to one of `read_only` / `reversible_write` / `external_facing` / `high_risk`. (`read_only`/`reversible_write` should not arrive here — the executor runs those directly — but if one does, log `auto_allow` to judge-log.yaml, delete `pending-action.yaml`, re-spawn the executor with "your proposed action was reversible; run it directly and continue," and loop.)
+4. **Spawn the judge** (`.pipelines/roles/judge.md`) with **isolated context** — supply ONLY: the manifest content, the matched action-policy rule (class + rule + note from `action-classification.yaml`), the contents of every existing `.agent-runs/<run_id>/judge-decisions/*.yaml` (prior decisions), and the action proposal block. **Never** pass the executor's reasoning chain, conversation, or run context. The judge writes `.agent-runs/<run_id>/judge-decisions/<action_id>.yaml`.
+5. **Parse the verdict** from that file. Act on `verdict`:
+   - **`allow` + `external_facing`** → write the exact command to `.agent-runs/<run_id>/judge-approved-next.txt` (the one-shot approval sidecar the PreToolUse hook consumes), execute the action via Bash, append `judged_allow` to judge-log.yaml.
+   - **`allow` + `high_risk`** → fire `AskUserQuestion` ("Judge ALLOWed this high-risk action: `<command>`. Approve?"). On APPROVE: write the sidecar, execute, append `human_confirmed`. On block: halt, append `human_blocked`, STOP.
+   - **`block`** → halt the pipeline, append `judged_block` to judge-log.yaml with the judge's reason, log `STAGE_BLOCKED: execute (judged_block)` to run.log, surface the failure, STOP.
+   - **`revise`** → append `judged_revise`, delete `pending-action.yaml`, increment the cycle count for this `action_id`, and **re-spawn the executor** with the judge's `revision_instruction` prepended ("REVISION REQUIRED for action `<action_id>`: <revision_instruction>"). **Cap: 3 revise cycles per `action_id`.** On the 4th, auto-escalate (fire `AskUserQuestion` with "Executor proposed action `<action_id>` 4 times after revise verdicts; the revision loop is not converging — approve, block, or replan?"). Loop.
+   - **`escalate`** → fire `AskUserQuestion` with the judge's `escalation_question`. On APPROVE: write the sidecar, execute, append `human_confirmed`. On block: halt, append `human_blocked`, STOP.
+6. **After executing** an approved action (allow/human_confirmed paths), delete `pending-action.yaml` and `judge-approved-next.txt` if still present, then **re-spawn the executor** ("action `<action_id>` was approved and executed; continue") and loop from step 1.
+7. **`confidence` floor:** the judge escalates whenever its `confidence` is below 0.7 (judge.md). The orchestrator does not override this — a low-confidence `allow` cannot occur; treat any verdict with `confidence < 0.7` that is not `escalate` as a malformed verdict and re-spawn the judge once, then escalate if it recurs.
+8. **Metrics.** When the stage finishes, write `.agent-runs/<run_id>/judge-metrics.yaml` (aggregate `total_actions`, `by_class`, `by_disposition`, `escalation_rate`, `judge_invocations`, `revision_cycles`) from the judge-log.yaml entries, then log `STAGE_DONE: execute`.
+
+**Floor precedence (preserved, never loosened):** the deterministic PreToolUse hook keeps its absolute `deny` floor for destructive and secret-exposure commands (`rm -rf`, force-push, `DROP TABLE`, `sudo`, `export *KEY=`, …). That floor precedes the judge and cannot be reopened by a judge `allow` or by the approval sidecar — the sidecar exempts only the external-facing and release class the hook redirects with `JUDGE_REVIEW_REQUIRED`, never the destructive/secret deny floor.
 
 ### Step 8 — plan gate (chat, after `plan` stage)
 

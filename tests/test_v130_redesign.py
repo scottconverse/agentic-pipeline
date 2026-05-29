@@ -778,3 +778,139 @@ def test_check_autonomous_compliance_is_noop():
     )
     assert r.returncode == 0
     assert "NO-OP" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# Judge reincorporation (2026-05-28): the orchestrator propose-execute loop,
+# the gated executor protocol, the ARCHITECTURE truth fix, and the preserved
+# conservative floors. These pin the live design so a later edit can't
+# silently re-introduce the deleted per-tool-call Handler 3a fiction or
+# loosen the floors.
+# ---------------------------------------------------------------------------
+
+_RUN_MD = REPO_ROOT / "skills" / "run" / "references" / "run.md"
+_EXECUTOR_CANON = REPO_ROOT / "pipelines" / "roles" / "executor.md"
+_EXECUTOR_PAYLOAD = (
+    REPO_ROOT / "skills" / "pipeline-init" / "references"
+    / "pipeline-payload" / "pipelines" / "roles" / "executor.md"
+)
+_JUDGE_CANON = REPO_ROOT / "pipelines" / "roles" / "judge.md"
+_JUDGE_PAYLOAD = (
+    REPO_ROOT / "skills" / "pipeline-init" / "references"
+    / "pipeline-payload" / "pipelines" / "roles" / "judge.md"
+)
+_ARCHITECTURE = REPO_ROOT / "ARCHITECTURE.md"
+_SELF_CLASS_RULES = REPO_ROOT / "pipelines" / "self-classification-rules.md"
+_ACTION_CLASSIFICATION = REPO_ROOT / "pipelines" / "action-classification.yaml"
+
+
+def test_run_md_has_judged_executor_handler():
+    """run.md Step 7a runs the propose-execute loop, gated on the
+    action-classification file existing, classifying then spawning the
+    judge then acting on the verdict."""
+    text = _read(_RUN_MD)
+    assert "Step 7a" in text
+    assert ".pipelines/action-classification.yaml" in text
+    assert "propose-execute loop" in text
+    assert "scripts/classify_action.py" in text
+    assert "Spawn the judge" in text
+    # All four verdicts are handled.
+    for verdict in ("allow", "block", "revise", "escalate"):
+        assert f"`{verdict}`" in text, f"run.md Step 7a does not handle verdict {verdict}"
+    # The revise cap is pinned at 3.
+    assert "3 revise cycles" in text
+
+
+def test_run_md_writes_the_three_judge_artifacts():
+    text = _read(_RUN_MD)
+    assert "judge-log.yaml" in text
+    assert "judge-metrics.yaml" in text
+    assert "judge-decisions/<action_id>.yaml" in text
+
+
+def test_run_md_uses_the_one_shot_approval_sidecar():
+    text = _read(_RUN_MD)
+    assert "judge-approved-next.txt" in text
+    assert "JUDGE_REVIEW_REQUIRED" in text
+
+
+def test_run_md_preserves_destructive_secret_floor():
+    """Step 7a states the absolute destructive/secret deny floor precedes
+    the judge and is never reopened by an allow or the sidecar."""
+    text = _read(_RUN_MD)
+    assert "Floor precedence" in text
+    assert "never loosened" in text
+    # The floor precedes the judge and the sidecar does not exempt it.
+    assert "precedes the judge" in text
+
+
+def test_executor_md_has_gated_stop_and_propose_protocol():
+    for path in (_EXECUTOR_CANON, _EXECUTOR_PAYLOAD):
+        text = _read(path)
+        assert "Stop-and-propose protocol" in text, f"{path} missing the protocol"
+        assert ".pipelines/action-classification.yaml" in text
+        assert "pending-action.yaml" in text
+        assert "JUDGE_REVIEW_REQUIRED" in text
+        # The proposal carries the fields the judge parses.
+        for field in ("action_id", "executor_justification", "executor_evidence"):
+            assert field in text, f"{path} proposal missing {field}"
+
+
+def test_executor_md_copies_are_byte_identical():
+    assert _EXECUTOR_CANON.read_bytes() == _EXECUTOR_PAYLOAD.read_bytes(), (
+        "executor.md canonical and payload mirror diverged"
+    )
+
+
+def test_judge_md_isolation_reinforcement_present():
+    for path in (_JUDGE_CANON, _JUDGE_PAYLOAD):
+        text = _read(path)
+        assert "load-bearing" in text, f"{path} missing the isolation reinforcement"
+        # The reinforcement is specifically about not sharing even when a
+        # large shared context window makes it free.
+        assert "shared context window" in text
+        assert "technically free" in text
+
+
+def test_judge_md_copies_are_byte_identical():
+    assert _JUDGE_CANON.read_bytes() == _JUDGE_PAYLOAD.read_bytes(), (
+        "judge.md canonical and payload mirror diverged"
+    )
+
+
+def test_judge_md_confidence_floor_preserved():
+    """The confidence-below-0.7 escalate floor must remain in both copies."""
+    for path in (_JUDGE_CANON, _JUDGE_PAYLOAD):
+        text = _read(path)
+        assert "below 0.7" in text, f"{path} lost the confidence-below-0.7 escalate floor"
+        assert "escalate" in text
+
+
+def test_architecture_section7_truth_fix():
+    """ARCHITECTURE §7 describes the live propose-execute realization and no
+    longer claims a per-tool-call interceptor."""
+    text = _read(_ARCHITECTURE)
+    assert "wraps every executor tool call" not in text
+    assert "Handler 3a" not in text
+    assert "propose-execute loop" in text
+    assert "orchestrator's altitude" in text
+
+
+def test_architecture_isolation_is_load_bearing_even_with_1m():
+    text = _read(_ARCHITECTURE)
+    assert "load-bearing safety, not an artifact of a context-size limit" in text
+    assert "1M-token shared context" in text
+
+
+def test_production_source_halt_floor_preserved():
+    """self-classification-rules.md keeps the always-halt-on-production-source
+    floor (read-only assertion; the file is not edited by this run)."""
+    text = _read(_SELF_CLASS_RULES)
+    assert "Production source code changes ALWAYS halt-and-ask" in text
+
+
+def test_action_classification_default_is_reversible_write():
+    """The conservative default class is preserved (file is reused, not
+    edited, by this run)."""
+    text = _read(_ACTION_CLASSIFICATION)
+    assert "default_class: reversible_write" in text

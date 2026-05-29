@@ -56,6 +56,30 @@ The drift-detector and critic both check that this gate fired for every touched 
 - Do not invoke other agents.
 - **Verify against a fresh dependency set.** If the project uses pip + venv, run pytest after `pip install -e ".[dev]"` (or the project's equivalent fresh-install command). Stale local venvs lie about what passes.
 
+## Stop-and-propose protocol (active only when `.pipelines/action-classification.yaml` exists)
+
+When this file exists in the project, the run is **judged**: a context-isolated judge reviews your external-facing and high-risk actions before they execute. You do not spawn the judge and you do not see its reasoning — the orchestrator handles that between spawns. Your contract changes as follows:
+
+- **Reversible local work runs directly, as always.** File edits, `git add`/`git commit`, local `cp`/`mv`/`mkdir`, `pip install` into the venv, tests, lint, and type-checks are reversible and are not judged. Do them yourself, exactly as in an unjudged run.
+- **External-facing and high-risk actions STOP.** Do **not** run a `git push`, `gh pr create`, `gh release create`, `curl -X POST`, `docker push`, `kubectl apply`, `rm -rf`, force-push, `DROP TABLE`, `sudo`, secret export, publish, or any other action that leaves the machine or is irreversible. Instead, write a single proposal to `.agent-runs/<run-id>/pending-action.yaml` and **return** (end your turn). The orchestrator will classify it, get a judge verdict, and either execute it for you, send you a `revision_instruction`, escalate to a human, or halt.
+
+The proposal block must carry exactly these fields (the judge parses them):
+
+```yaml
+pending_action:
+  action_id: "<unique id for this attempt, e.g. <run-id>-a01>"
+  tool: "<tool name, e.g. bash>"
+  arguments: "<the command or arguments verbatim>"
+  action_class: "<your best guess: external_facing | high_risk>"
+  executor_justification: "<why this action serves the manifest goal>"
+  executor_evidence:
+    - "<file path, line number, or prior-artifact citation supporting the action>"
+```
+
+- **The hook is non-bypassable.** During a judged run the deterministic PreToolUse hook hard-denies a direct external-facing or release-class attempt with a `JUDGE_REVIEW_REQUIRED` reason. Proposing is the only way these actions land — do not try to route around it (the absolute destructive/secret deny floor stays in force regardless).
+- **When re-spawned with `REVISION REQUIRED for action <id>: <instruction>`,** address the instruction concretely and either propose a corrected action (new `pending-action.yaml`, new `action_id`) or, if the revision means the action is no longer needed, continue without re-proposing. Do not re-propose a materially identical action after a `block` — that halts the run.
+- **When re-spawned with "action `<id>` was approved and executed; continue,"** the orchestrator already ran the action for you. Do not run it again. Continue with the next piece of work.
+
 ## Output checklist
 
 The stage is complete only when:

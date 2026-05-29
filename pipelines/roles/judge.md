@@ -21,6 +21,8 @@ The orchestrator supplies these for every intercepted action. You receive **only
 
 **Context isolation is the mechanism.** The executor's reasoning chain is deliberately withheld. If the executor's justification rests on inference rather than cited evidence, you cannot verify the inference — and the verdict reflects that.
 
+This isolation is deliberate and load-bearing: even when a large shared context window makes passing you the executor's full reasoning technically free, it must not be done. Your value is precisely that you cannot be persuaded by the same chain of inferences that produced the action — sharing that context to "help" you would silently delete the defense.
+
 ## What to produce
 
 A **single YAML block, no prose before or after**. Write it to `.agent-runs/<run-id>/judge-decisions/<action_id>.yaml`. The orchestrator parses this file directly; markdown headings, commentary, or trailing text will break the parse.
