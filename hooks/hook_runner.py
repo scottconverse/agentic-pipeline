@@ -232,8 +232,16 @@ def handle_pre_tool_use(event: dict) -> int:
     severity, reasons = classify_tool_risk(event, runs)
     if severity == "deny":
         reason = "Agent Pipeline hook denied tool call: " + "; ".join(reasons)
-        append_hook_event(root, "PreToolUse", reason)
-        record_hook_memory(root, "PreToolUse", reason, {"severity": "deny"})
+        # v0.4: tag judge-routing denies distinctly so a JUDGE_REVIEW_REQUIRED
+        # redirect (executor must stop-and-propose during a judged run) is
+        # observable separately from a generic content-risk deny.
+        rule = (
+            "judge_routing"
+            if any("JUDGE_REVIEW_REQUIRED" in r for r in reasons)
+            else "risk_classifier"
+        )
+        append_hook_event(root, "PreToolUse", rule + " deny: " + reason[:200])
+        record_hook_memory(root, "PreToolUse", reason, {"severity": "deny", "rule": rule})
         return write_json(
             {
                 "hookSpecificOutput": {
