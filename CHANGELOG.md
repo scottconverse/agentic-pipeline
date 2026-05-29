@@ -7,6 +7,27 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-05-29
+
+**v2.3.0 — judge layer reincorporation.** Brings back the v0.4 judge layer as a platform-executable design: opt-in, real-time, context-isolated supervision of the executor's risky actions. Active only when `.pipelines/action-classification.yaml` exists in your project; with no such file the executor stage runs exactly as before. The original "Handler 3a" wrapped every executor tool call in a classify→judge→execute interceptor — impossible on this platform, where a subagent runs autonomously to completion and cannot spawn the judge mid-flight. This realizes the same load-bearing property (a judge that evaluates risky actions *before* they execute, in isolation from the executor's reasoning) at the orchestrator's altitude, across spawns.
+
+**Test count: 513 passing** (forward-compat suite green; codex-pinned symbols byte-untouched). Proven end-to-end by a live e2e on both verdict paths (`block` and `allow`), with real isolated executor + judge subagents and the real hook code.
+
+### Added — judged-executor propose-execute loop (Model A, orchestrated)
+
+- `skills/run/references/run.md` **Step 7a**: when the classification file exists, the executor stage runs a propose-execute loop instead of the single spawn. The executor does reversible local work directly but **stops and writes a `pending-action.yaml` proposal** for any external-facing or high-risk action and returns; the orchestrator classifies, spawns the judge with **isolated context**, parses the verdict, and acts: `allow` (+ chat-confirm for high_risk) / `revise` (re-spawn, cap 3 cycles per action_id) / `block` / `escalate` (confidence-below-0.7 floor → escalate). Produces `judge-log.yaml`, `judge-metrics.yaml`, and `judge-decisions/<action_id>.yaml`.
+- `pipelines/roles/executor.md`: gated stop-and-propose protocol. `pipelines/roles/judge.md`: isolation reinforced as load-bearing safety even when a 1M-token shared context makes sharing free. Both mirrored byte-identical into the pipeline-init payload.
+- `scripts/classify_action.py` (+ payload mirror): pure-Python risk classifier over `action-classification.yaml` (most-restrictive-first; codex/Claude tool-alias mapping; conservative `reversible_write` default), with a CLI entry point.
+
+### Added — non-bypassable PreToolUse hook routing (Model B, deterministic)
+
+- `hook_utils.classify_tool_risk` gains a judge-routing branch placed **last** and gated `severity != "deny"`: during a judged run it upgrades external-facing/release-class actions warn→`JUDGE_REVIEW_REQUIRED` deny, so the stop-and-propose protocol cannot be skipped. One-shot orchestrator exemption via `judge-approved-next.txt`: `classify_tool_risk` only **reads** it (stable across the PreToolUse and PermissionRequest events); the consume happens once on PostToolUse success in `consume_judge_approval_on_bash_success`, mirroring the pending-recheck sidecar.
+- `hook_runner` tags judge-routing denies distinctly (`rule: judge_routing` vs `risk_classifier`).
+
+### Preserved
+
+- **Floor precedence (never loosened):** the absolute destructive/secret deny floor is evaluated first and structurally precedes the judge branch — a judge `allow` or the approval sidecar can never reopen it. `ARCHITECTURE.md` §7 documents the trust boundary: the hook is non-bypassable against direct/drift attempts; the sidecar is an orchestrator-trust mechanism, not an adversarial sandbox.
+
 ## [2.2.2] — 2026-05-20
 
 **v2.2.2 — auto-update awareness.** Closes the v2.2.1 production gotcha: third-party Claude Code marketplaces have auto-update OFF by default (per [docs](https://code.claude.com/docs/en/discover-plugins#configure-auto-updates)), so a `git pull && git checkout vX.Y.Z` on the marketplace clone followed by a Cowork restart does NOT install the new version. The plugin stayed pinned at the previously-installed version forever until the operator explicitly ran `claude plugin install` or toggled auto-update via the `/plugin` UI. v2.2.1 shipped a feature that depended on the new version actually loading; in production it didn't, and the feature was a no-op until the operator manually triggered install.
