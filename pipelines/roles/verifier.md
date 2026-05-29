@@ -25,7 +25,19 @@ Write **`.agent-runs/<run-id>/verifier-report.md`** with these sections:
 
    Example: `**Criteria: 5 total, 4 MET, 1 PARTIAL, 0 NOT MET, 0 NOT APPLICABLE**`
 
-   The numbers must add up. The auto-promote script reads this line directly; a missing or malformed line treats this stage as failed.
+   The numbers must add up. The auto-promote script reads this line directly.
+
+   **Also emit this machine-verdict block (v3.0.0).** It is invisible in rendered markdown and `auto_promote.py` parses it in *preference* to the prose line, so a reworded or restyled count line can never cause a false stop. Emit both — the prose line for humans, the block for the gate:
+
+   ```
+   <!-- PIPELINE-VERDICT:verifier
+   total: <total>
+   met: <met>
+   partial: <partial>
+   not_met: <not_met>
+   not_applicable: <na>
+   -->
+   ```
 
 1. **Manifest exit criteria** — every item from `manifest.expected_outputs` and `manifest.definition_of_done`, each with one of: **MET** / **PARTIAL** / **NOT MET** / **NOT APPLICABLE**. For every non-MET, an evidence line citing the file, the test, or the missing artifact. Use the literal markdown headers `- **MET**:`, `- **PARTIAL**:`, `- **NOT MET**:`, `- **NOT APPLICABLE**:` so the count line in §0 can be cross-checked by simple parsing.
 2. **Tests** — count of new tests in failing-tests-report.md and the count now passing per implementation-report.md. They must match. If implementation-report.md claims tests pass, run them yourself and confirm.

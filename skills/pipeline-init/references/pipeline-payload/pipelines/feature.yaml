@@ -10,6 +10,21 @@
 # Gates marked human_approval require the human director to sign off
 # before the pipeline advances. Pipeline gates (e.g., policy) are
 # automated.
+#
+# v3.0.0 (WS-1) — optional per-stage execution hints:
+#   model:  model id to spawn this stage's subagent with (default: the
+#           orchestrator's default model). Left unset everywhere here so
+#           no model id is hardcoded; the migration is behavioral.
+#   effort: high | extra | max — reasoning effort for the subagent.
+#           Bias quality-critical stages (critic, verifier, drift-detector,
+#           manager, and the manifest-drafter) to `max`.
+#   speed:  fast — fast mode for latency-sensitive stages.
+# These keys are advisory and additive: the orchestrator applies them only
+# when it spawns a model subagent for the stage (the agent-role stages).
+# `role: pipeline` stages run a deterministic command and `role: human`
+# stages are gates, so they ignore these hints. A stage with no hints runs
+# exactly as it did before v3.0.0. The manifest `risk: high` level can raise
+# effort on every model stage at orchestration time (see run.md Step 7).
 
 pipeline: feature
 
@@ -26,6 +41,7 @@ stages:
     role: pipeline
     command: python scripts/policy/run_preflight.py --run {run_id}
     artifact: preflight-report.md
+    speed: fast  # latency-sensitive; advisory for the command stage
 
   - name: research
     role: researcher
@@ -48,18 +64,22 @@ stages:
     role: pipeline
     command: python scripts/policy/run_all.py --run {run_id}
     artifact: policy-report.md
+    speed: fast  # latency-sensitive; advisory for the command stage
 
   - name: verify
     role: verifier
     artifact: verifier-report.md
+    effort: max  # quality-critical: independent criterion verification
 
   - name: drift-detect
     role: drift-detector
     artifact: drift-report.md
+    effort: max  # quality-critical: manifest-vs-result drift
 
   - name: critique
     role: critic
     artifact: critic-report.md
+    effort: max  # quality-critical: hostile cold read
 
   - name: auto-promote
     role: pipeline
@@ -71,6 +91,7 @@ stages:
     role: manager
     artifact: manager-decision.md
     gate: human_approval
+    effort: max  # quality-critical: final promote/block decision
     # v1.3.0: when auto_promote_aware: true AND auto_promote.py wrote
     # manager-decision.md with **Decision: PROMOTE** as its first line,
     # the run skill skips the human gate. Otherwise the gate fires

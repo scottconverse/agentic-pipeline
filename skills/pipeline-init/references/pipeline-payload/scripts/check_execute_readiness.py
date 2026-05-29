@@ -32,6 +32,48 @@ CHECKLIST_RE = re.compile(
     r"(?P<deferred>\d+)\s+deferred\*\*"
 )
 
+# v3.0.0 (Opus 4.8 retarget): tolerant fallbacks. The constants above remain
+# the fast/exact path; these accept the same content when a more verbose
+# model restyles it (bold dropped, spacing/punctuation drift), without
+# loosening the semantic checks (counts must still reconcile and zero blocked).
+_READINESS_LINE_RE = re.compile(r"DoD\s+readiness", re.IGNORECASE)
+_NOT_READY_RE = re.compile(r"\bNOT[_\s]*READY\b", re.IGNORECASE)
+_READY_RE = re.compile(r"\bREADY\b", re.IGNORECASE)
+
+
+def _readiness_lines(text: str) -> list[str]:
+    return [ln for ln in text.splitlines() if _READINESS_LINE_RE.search(ln)]
+
+
+def _declares_not_ready(text: str) -> bool:
+    return any(_NOT_READY_RE.search(ln) for ln in _readiness_lines(text))
+
+
+def _declares_ready(text: str) -> bool:
+    for ln in _readiness_lines(text):
+        if _NOT_READY_RE.search(ln):
+            continue
+        if _READY_RE.search(ln):
+            return True
+    return False
+
+
+def _tolerant_checklist(text: str) -> tuple[int, int, int, int] | None:
+    """Extract (total, ready, blocked, deferred) from a 'checklist' line,
+    tolerating bold/spacing/punctuation drift. Returns None if not all four
+    counts resolve on a single checklist line."""
+    for ln in text.splitlines():
+        if not re.search(r"checklist", ln, re.IGNORECASE):
+            continue
+        got: dict[str, int] = {}
+        for field in ("total", "ready", "blocked", "deferred"):
+            m = re.search(rf"(\d+)\s+{field}\b", ln, re.IGNORECASE)
+            if m:
+                got[field] = int(m.group(1))
+        if len(got) == 4:
+            return got["total"], got["ready"], got["blocked"], got["deferred"]
+    return None
+
 
 def _run_dir(run_id: str) -> Path:
     return REPO_ROOT / ".agent-runs" / run_id
@@ -46,29 +88,34 @@ def check_execute_readiness(run_id: str) -> list[str]:
         return [f"implementation-report.md missing for run {run_id}"]
 
     text = report.read_text(encoding="utf-8-sig")
-    if READY_LINE not in text:
-        if NOT_READY_LINE in text:
+    # Readiness line: exact form first, then tolerant detection.
+    if READY_LINE not in text and not _declares_ready(text):
+        if NOT_READY_LINE in text or _declares_not_ready(text):
             violations.append(
-                "implementation-report.md declares `**DoD readiness: NOT_READY**`; "
+                "implementation-report.md declares DoD readiness NOT_READY; "
                 "continue implementation instead of advancing to policy/verify."
             )
         else:
             violations.append(
                 "implementation-report.md missing exact readiness line "
-                "`**DoD readiness: READY**`."
+                "`**DoD readiness: READY**` (no tolerant readiness form found either)."
             )
 
+    # Checklist counts: exact regex first, then tolerant scan.
     match = CHECKLIST_RE.search(text)
-    if not match:
+    counts = (
+        (int(match.group("total")), int(match.group("ready")),
+         int(match.group("blocked")), int(match.group("deferred")))
+        if match
+        else _tolerant_checklist(text)
+    )
+    if counts is None:
         violations.append(
             "implementation-report.md missing parseable checklist line "
             "`**DoD checklist: T total, R ready, B blocked, D deferred**`."
         )
     else:
-        total = int(match.group("total"))
-        ready = int(match.group("ready"))
-        blocked = int(match.group("blocked"))
-        deferred = int(match.group("deferred"))
+        total, ready, blocked, deferred = counts
         if total <= 0:
             violations.append("DoD checklist must contain at least one manifest/DoD item.")
         if ready + blocked + deferred != total:

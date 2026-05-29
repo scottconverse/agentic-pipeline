@@ -38,6 +38,18 @@ Write **`.agent-runs/<run-id>/critic-report.md`** with these sections:
 
    This line MUST appear exactly once in the report. The numbers must add up.
 
+   **Also emit this machine-verdict block (v3.0.0).** It is invisible in rendered markdown and `auto_promote.py` parses it in *preference* to the prose line, so a reworded or restyled count line can never cause a false stop. Emit both — the prose line for humans, the block for the gate:
+
+   ```
+   <!-- PIPELINE-VERDICT:critic
+   total: <total>
+   blocker: <blocker>
+   critical: <critical>
+   major: <major>
+   minor: <minor>
+   -->
+   ```
+
 3. **Blocker findings** — work cannot ship in its current state. Each finding is a numbered subsection with:
    - **Title.** Short noun phrase.
    - **Evidence.** Specific file:line citations from the artifacts or the repo. No paraphrase.

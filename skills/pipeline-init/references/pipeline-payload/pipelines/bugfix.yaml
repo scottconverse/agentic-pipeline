@@ -11,6 +11,13 @@
 #      either reproducible or it isn't, and the manifest already
 #      captures the symptom.
 
+# v3.0.0 (WS-1) — optional per-stage execution hints (model / effort / speed):
+# see pipelines/feature.yaml header for the full contract. In brief: the
+# orchestrator applies model/effort/speed only when it spawns a model
+# subagent for an agent-role stage; `role: pipeline` and `role: human`
+# stages ignore them. No model id is hardcoded. A stage with no hints runs
+# exactly as it did before v3.0.0.
+
 pipeline: bugfix
 
 stages:
@@ -23,6 +30,7 @@ stages:
     role: pipeline
     command: python scripts/policy/run_preflight.py --run {run_id}
     artifact: preflight-report.md
+    speed: fast  # latency-sensitive; advisory for the command stage
 
   - name: research
     role: researcher
@@ -40,18 +48,22 @@ stages:
     role: pipeline
     command: python scripts/policy/run_all.py --run {run_id}
     artifact: policy-report.md
+    speed: fast  # latency-sensitive; advisory for the command stage
 
   - name: verify
     role: verifier
     artifact: verifier-report.md
+    effort: max  # quality-critical: independent criterion verification
 
   - name: drift-detect
     role: drift-detector
     artifact: drift-report.md
+    effort: max  # quality-critical: manifest-vs-result drift
 
   - name: critique
     role: critic
     artifact: critic-report.md
+    effort: max  # quality-critical: hostile cold read
 
   - name: auto-promote
     role: pipeline
@@ -63,6 +75,7 @@ stages:
     role: manager
     artifact: manager-decision.md
     gate: human_approval
+    effort: max  # quality-critical: final promote/block decision
     # v1.3.0: when auto_promote_aware: true AND auto_promote.py wrote
     # manager-decision.md with **Decision: PROMOTE** as its first line,
     # the run skill skips the human gate. Otherwise the gate fires

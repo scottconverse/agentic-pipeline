@@ -69,3 +69,44 @@ def test_execute_readiness_rejects_legacy_backend_only_report(tmp_path, monkeypa
 
     assert any("missing exact readiness line" in violation for violation in violations)
     assert any("missing parseable checklist line" in violation for violation in violations)
+
+
+# v3.0.0 (Opus 4.8 retarget): tolerant readiness + checklist parsing. The
+# exact `**DoD readiness: READY**` / `**DoD checklist: ...**` forms still
+# pass; these add restyled variants a more verbose model may emit, without
+# loosening the semantic checks (counts reconcile, zero blocked).
+
+
+def test_execute_readiness_accepts_tolerant_restyled_report(tmp_path, monkeypatch) -> None:
+    run_dir = _run_dir(tmp_path, monkeypatch)
+    (run_dir / "implementation-report.md").write_text(
+        "\n".join(
+            [
+                "## DoD readiness",
+                "DoD readiness: READY",                                  # bold dropped
+                "DoD checklist — 3 total, 3 ready, 0 blocked, 0 deferred",  # em-dash, no bold
+                "- [x] all items complete",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert check_execute_readiness.check_execute_readiness("readiness-run") == []
+
+
+def test_execute_readiness_tolerant_detects_not_ready_and_blocked(tmp_path, monkeypatch) -> None:
+    run_dir = _run_dir(tmp_path, monkeypatch)
+    (run_dir / "implementation-report.md").write_text(
+        "\n".join(
+            [
+                "DoD readiness: NOT READY",                              # space variant
+                "DoD checklist: 4 total, 3 ready, 1 blocked, 0 deferred",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    violations = check_execute_readiness.check_execute_readiness("readiness-run")
+
+    assert any("NOT_READY" in violation for violation in violations)
+    assert any("1 blocked" in violation for violation in violations)
