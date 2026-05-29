@@ -12,6 +12,7 @@ Adapted for claude:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -448,10 +449,99 @@ def read_memory_handoff(run: ActiveRun) -> str:
     path = run.run_dir / "memory" / "handoff_current.md"
     if not path.exists():
         return ""
+    # v3.0.0 WS-6: verify the SHA-256 sidecar before re-injecting. On a
+    # mismatch we skip the content entirely and surface the literal
+    # hash-mismatch warning instead, so the model treats the missing
+    # memory as unavailable rather than trusting bytes that changed on
+    # disk since the pipeline last wrote them.
+    if not verify_memory_file(path):
+        # If the file vanished in the window between the existence check above
+        # and the verify read (e.g. the run dir was cleaned mid-session),
+        # treat it as missing rather than a mismatch: there is no changed
+        # content to warn about, and "" matches the not-exists path.
+        if not path.exists():
+            return ""
+        return memory_hash_mismatch_warning(path)
     text = path.read_text(encoding="utf-8-sig", errors="replace").strip()
     if not text:
         return ""
     return "Agent Pipeline persistent memory:\n" + _truncate(text, 2400)
+
+
+# --- v3.0.0 WS-6: per-run memory integrity (SHA-256 sidecar) -------------
+#
+# Per-run memory files under .agent-runs/<id>/memory/ are reloaded into a
+# fresh session at every SessionStart and re-injected after every
+# compaction. Between the pipeline's last write and the next reload the
+# file sits on disk where anything with write access can change it. We
+# record a SHA-256 sidecar (<file>.sha256) on every write and verify it
+# before re-injecting, skipping any file whose bytes no longer match.
+#
+# A hash mismatch is the literal, verifiable fact and nothing more: intent
+# is not inferable from a hash, so the operator-facing warning never says
+# "tampering" or "compromised". It states the content was not loaded and
+# the model must re-derive affected steps rather than guess.
+#
+# Delivery (verify-first probe, 2026-05-28): the Claude Code hook output
+# schema has no `role` field, so a hook cannot emit a mid-conversation
+# role:system message. additionalContext is the only injection channel for
+# SessionStart/PostCompact, and read_memory_handoff's return value flows
+# into exactly that. The warning is therefore delivered via
+# additionalContext, the fallback the manifest names; the short, fixed
+# string stays under the 1024-token cache floor on 4.8, so it is cacheable.
+
+MEMORY_HASH_MISMATCH_TEMPLATE = (
+    "MEMORY HASH MISMATCH for {path}. Content not loaded this session. "
+    "Re-derive any step that depended on it with fresh eyes; do not guess "
+    "the missing content."
+)
+
+
+def memory_hash_mismatch_warning(path: Path) -> str:
+    return MEMORY_HASH_MISMATCH_TEMPLATE.format(path=path)
+
+
+def _memory_sidecar_path(path: Path) -> Path:
+    return path.with_name(path.name + ".sha256")
+
+
+def _write_memory_sidecar(path: Path) -> None:
+    """Record a SHA-256 sidecar next to a per-run memory file.
+
+    Best-effort: a memory write must never crash the hook, so any
+    filesystem error is swallowed. The sidecar stores the hex digest of
+    the file's bytes exactly as written.
+    """
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        _memory_sidecar_path(path).write_text(digest + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def verify_memory_file(path: Path) -> bool:
+    """Return True when *path* is safe to re-inject, False on mismatch.
+
+    - Sidecar present and matches the current bytes -> True.
+    - Sidecar absent (legacy file predating this feature) -> write one on
+      first touch and return True. There is no migration script; the
+      sidecar is created lazily the first time the file is verified.
+    - Sidecar present but does not match -> False; the caller skips
+      re-injection and surfaces ``memory_hash_mismatch_warning(path)``.
+    """
+    try:
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    sidecar = _memory_sidecar_path(path)
+    if not sidecar.exists():
+        _write_memory_sidecar(path)
+        return True
+    try:
+        expected = sidecar.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return expected == actual
 
 
 # --- v2.2.0: memory-rule scope override ----------------------------------
@@ -2175,10 +2265,17 @@ def record_hook_memory(repo_root: Path, event_name: str, message: str, metadata:
         "message": truncated,
         "metadata": merged_metadata,
     }
+    # v3.0.0 WS-6: sidecar each JSONL memory-record write here. Only the
+    # handoff is verified on re-inject (read_memory_handoff); these JSONL
+    # sidecars are written but not read back yet — kept current so the record
+    # files (events/turns/decisions/open_loops) carry a sidecar for any later
+    # verifier. memory_probe.log is a debug breadcrumb and stays unsidecared.
     target_file = memory_dir / _memory_file_for_event(event_name)
     append_jsonl(target_file, record)
+    _write_memory_sidecar(target_file)
     if target_file.name != "events.jsonl":
         append_jsonl(memory_dir / "events.jsonl", record)
+        _write_memory_sidecar(memory_dir / "events.jsonl")
     _write_memory_probe(memory_dir, repo_root, event_name, run)
     _write_handoff(run, memory_dir)
 
@@ -2231,7 +2328,9 @@ def _write_handoff(run: ActiveRun, memory_dir: Path) -> None:
             "- Re-run relevant policy checks before relying on any remembered approval, warning, or failure state.",
         ]
     )
-    (memory_dir / "handoff_current.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    handoff_path = memory_dir / "handoff_current.md"
+    handoff_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _write_memory_sidecar(handoff_path)
 
 
 def _write_memory_probe(memory_dir: Path, repo_root: Path, event_name: str, run: ActiveRun) -> None:

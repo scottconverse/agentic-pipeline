@@ -859,3 +859,150 @@ def test_cmd_test_oss_hint_mentions_8888_when_misconfigured(tmp_path, monkeypatc
     assert rc == 2
     assert "8888" in captured.err
     assert "3000" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# WS-6 (v3.0.0): per-run memory integrity — SHA-256 sidecar + verify-on-reload
+# ---------------------------------------------------------------------------
+#
+# Per-run memory files under .agent-runs/<id>/memory/ are reloaded into a
+# fresh session and re-injected after compaction. record_hook_memory and
+# _write_handoff now record a .sha256 sidecar on every write, and
+# read_memory_handoff verifies that sidecar before re-injecting — skipping
+# any file whose bytes changed on disk and surfacing the literal mismatch
+# warning instead.
+
+from hooks.hook_utils import (
+    ActiveRun,
+    MEMORY_HASH_MISMATCH_TEMPLATE,
+    _write_memory_sidecar,
+    memory_hash_mismatch_warning,
+    read_memory_handoff,
+    record_hook_memory,
+    verify_memory_file,
+)
+
+
+def _ws6_active_run(tmp_path: Path) -> Path:
+    """Minimal discoverable active run for record_hook_memory."""
+    run = tmp_path / ".agent-runs" / "ws6-run"
+    run.mkdir(parents=True)
+    (run / "active-control-state.md").write_text(
+        "active_run: true\ncurrent_stage: execute\n", encoding="utf-8"
+    )
+    return run
+
+
+def _ws6_run_handle(tmp_path: Path) -> ActiveRun:
+    run_dir = tmp_path / ".agent-runs" / "ws6-run"
+    (run_dir / "memory").mkdir(parents=True, exist_ok=True)
+    return ActiveRun(
+        run_id="ws6-run",
+        run_dir=run_dir,
+        state_path=run_dir / "active-control-state.md",
+        fields={"current_stage": "execute"},
+        directive_bound=False,
+        judge_active=False,
+    )
+
+
+def test_record_hook_memory_writes_sha256_sidecars(tmp_path, monkeypatch) -> None:
+    """Every per-run memory write records a matching SHA-256 sidecar
+    (the re-injected handoff plus the events.jsonl tail it is built from)."""
+    import hashlib
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _ws6_active_run(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    record_hook_memory(tmp_path, "UserPromptSubmit", "operator says hello")
+
+    memory = run / "memory"
+    for name in ("handoff_current.md", "events.jsonl"):
+        f = memory / name
+        sidecar = memory / (name + ".sha256")
+        assert f.exists(), f"{name} not written"
+        assert sidecar.exists(), f"{name}.sha256 sidecar not written"
+        assert sidecar.read_text(encoding="utf-8").strip() == hashlib.sha256(
+            f.read_bytes()
+        ).hexdigest()
+
+
+def test_memory_handoff_clean_reload_returns_content(tmp_path) -> None:
+    """A handoff with a matching sidecar re-injects normally."""
+    run = _ws6_run_handle(tmp_path)
+    handoff = run.run_dir / "memory" / "handoff_current.md"
+    handoff.write_text("# memory\nstage: execute\n", encoding="utf-8")
+    _write_memory_sidecar(handoff)
+
+    out = read_memory_handoff(run)
+
+    assert "stage: execute" in out
+    assert "MEMORY HASH MISMATCH" not in out
+
+
+def test_memory_handoff_tampered_file_skipped_with_literal_warning(tmp_path) -> None:
+    """A handoff whose bytes changed after its sidecar was written is NOT
+    re-injected; read_memory_handoff returns the literal mismatch warning."""
+    run = _ws6_run_handle(tmp_path)
+    handoff = run.run_dir / "memory" / "handoff_current.md"
+    handoff.write_text("# memory\noriginal content\n", encoding="utf-8")
+    _write_memory_sidecar(handoff)
+
+    # Out-of-band modification with no sidecar refresh.
+    handoff.write_text("# memory\ninjected instruction\n", encoding="utf-8")
+
+    out = read_memory_handoff(run)
+
+    assert "injected instruction" not in out
+    assert out == MEMORY_HASH_MISMATCH_TEMPLATE.format(path=handoff)
+    assert out == memory_hash_mismatch_warning(handoff)
+    # The literal phrasing the manifest pins...
+    assert out.startswith("MEMORY HASH MISMATCH for ")
+    assert "Content not loaded this session." in out
+    assert "re-derive any step that depended on it with fresh eyes" in out.lower()
+    # ...and the words it bans (intent is not inferable from a hash).
+    assert "tampering" not in out.lower()
+    assert "compromised" not in out.lower()
+
+
+def test_memory_handoff_legacy_no_sidecar_bootstraps(tmp_path) -> None:
+    """A legacy handoff lacking a sidecar gets one on first touch and is
+    treated as valid — no migration script, lazy creation on first read."""
+    run = _ws6_run_handle(tmp_path)
+    handoff = run.run_dir / "memory" / "handoff_current.md"
+    handoff.write_text("# memory\nlegacy content\n", encoding="utf-8")
+    sidecar = handoff.with_name("handoff_current.md.sha256")
+    assert not sidecar.exists()
+
+    out = read_memory_handoff(run)
+
+    assert "legacy content" in out
+    assert "MEMORY HASH MISMATCH" not in out
+    assert sidecar.exists(), "legacy file must get a sidecar on first touch"
+    assert verify_memory_file(handoff) is True
+
+
+def test_memory_handoff_vanished_during_verify_treated_as_missing(
+    tmp_path, monkeypatch
+) -> None:
+    """If the handoff disappears in the window between the existence check and
+    the verify read, read_memory_handoff returns "" (missing), not the HASH
+    MISMATCH warning — there is no changed content to warn about."""
+    run = _ws6_run_handle(tmp_path)
+    handoff = run.run_dir / "memory" / "handoff_current.md"
+    handoff.write_text("# memory\noriginal\n", encoding="utf-8")
+    _write_memory_sidecar(handoff)
+
+    def vanishing_verify(path: Path) -> bool:
+        # Simulate an out-of-band deletion inside the TOCTOU window, then the
+        # unreadable-file result verify_memory_file would return.
+        path.unlink()
+        return False
+
+    monkeypatch.setattr("hooks.hook_utils.verify_memory_file", vanishing_verify)
+
+    out = read_memory_handoff(run)
+
+    assert out == ""
+    assert "MEMORY HASH MISMATCH" not in out
