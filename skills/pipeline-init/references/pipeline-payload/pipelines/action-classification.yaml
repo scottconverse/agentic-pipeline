@@ -14,8 +14,13 @@
 #
 # This file is opt-in: if `.pipelines/action-classification.yaml` does
 # NOT exist in your project, the orchestrator runs the executor stage
-# with the original Handler 3 (no judge interception). If it DOES exist,
-# Handler 3a is used and every executor action is classified and routed.
+# with the standard single-spawn handler (no judge interception). If it
+# DOES exist, the orchestrator runs the judged-executor propose-execute
+# loop (run.md Step 7a): the executor does reversible local work directly
+# but STOPS and proposes any external-facing or high-risk action, and the
+# orchestrator routes that proposal to a context-isolated judge before it
+# executes. Classification happens at the orchestrator's altitude on the
+# proposed action, not per tool call inside the executor.
 #
 # Customize for your project by adding rules under the appropriate class
 # (e.g. your specific deploy command goes under high_risk; your local

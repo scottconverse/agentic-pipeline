@@ -30,6 +30,7 @@ try:
         append_hook_event,
         classify_tool_risk,
         cleanup_stale_plugin_caches,
+        consume_judge_approval_on_bash_success,
         discover_active_runs,
         marketplace_update_available_context,
         memory_override_context,
@@ -56,6 +57,7 @@ except ModuleNotFoundError:  # pragma: no cover - package import from tests
         append_hook_event,
         classify_tool_risk,
         cleanup_stale_plugin_caches,
+        consume_judge_approval_on_bash_success,
         discover_active_runs,
         marketplace_update_available_context,
         memory_override_context,
@@ -232,8 +234,16 @@ def handle_pre_tool_use(event: dict) -> int:
     severity, reasons = classify_tool_risk(event, runs)
     if severity == "deny":
         reason = "Agent Pipeline hook denied tool call: " + "; ".join(reasons)
-        append_hook_event(root, "PreToolUse", reason)
-        record_hook_memory(root, "PreToolUse", reason, {"severity": "deny"})
+        # v0.4: tag judge-routing denies distinctly so a JUDGE_REVIEW_REQUIRED
+        # redirect (executor must stop-and-propose during a judged run) is
+        # observable separately from a generic content-risk deny.
+        rule = (
+            "judge_routing"
+            if any("JUDGE_REVIEW_REQUIRED" in r for r in reasons)
+            else "risk_classifier"
+        )
+        append_hook_event(root, "PreToolUse", rule + " deny: " + reason[:200])
+        record_hook_memory(root, "PreToolUse", reason, {"severity": "deny", "rule": rule})
         return write_json(
             {
                 "hookSpecificOutput": {
@@ -303,6 +313,17 @@ def handle_post_tool_use(event: dict) -> int:
             record_hook_memory(
                 root, "PostToolUse", "policy-recheck cleared: " + popped[:300],
                 {"severity": "info", "rule": "policy_recheck_cleared"},
+            )
+        # v0.4: consume the one-shot judge-approval sidecar after the approved
+        # external action actually ran, so the exemption can't be reused and
+        # classify_tool_risk can stay a read-only classifier across the
+        # PreToolUse and PermissionRequest events.
+        consumed = consume_judge_approval_on_bash_success(event, runs)
+        if consumed:
+            append_hook_event(root, "PostToolUse", "judge-approval consumed: " + consumed[:200])
+            record_hook_memory(
+                root, "PostToolUse", "judge-approval consumed: " + consumed[:300],
+                {"severity": "info", "rule": "judge_approval_consumed"},
             )
     context = tool_failure_context(event)
     if not context:
