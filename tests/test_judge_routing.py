@@ -374,3 +374,43 @@ def test_handle_pre_tool_use_tags_generic_risk_deny_separately(
     events = (run / "hook-events.jsonl").read_text(encoding="utf-8")
     assert "risk_classifier deny" in events
     assert "judge_routing deny" not in events
+
+
+# ---------------------------------------------------------------------------
+# hook_runner integration — the one-shot consume is gated on PostToolUse SUCCESS
+# ---------------------------------------------------------------------------
+
+
+def test_handle_post_tool_use_consumes_sidecar_only_on_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # The consume lives inside handle_post_tool_use's `if not failed:` block.
+    # A FAILED external action must leave the approval sidecar in place so the
+    # orchestrator can retry the judge-approved command; only a SUCCESSFUL run
+    # burns the exemption. Pins the success-gating so a refactor can't silently
+    # move the consume outside the success guard (which would let a single
+    # failed attempt void a still-valid judge approval).
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    run = _setup_active_judged_run(tmp_path)
+    command = "git push origin feature/judge"
+    (run / _JUDGE_APPROVED_SIDECAR).write_text(command, encoding="utf-8")
+
+    # A failed PostToolUse must NOT consume the sidecar.
+    hook_runner.handle_post_tool_use(
+        {
+            "cwd": str(tmp_path),
+            "tool_input": {"command": command},
+            "tool_response": {"exit_code": 1},
+        }
+    )
+    assert (run / _JUDGE_APPROVED_SIDECAR).exists()
+
+    # A successful PostToolUse consumes it exactly once.
+    hook_runner.handle_post_tool_use(
+        {
+            "cwd": str(tmp_path),
+            "tool_input": {"command": command},
+            "tool_response": {"exit_code": 0},
+        }
+    )
+    assert not (run / _JUDGE_APPROVED_SIDECAR).exists()

@@ -802,6 +802,10 @@ _JUDGE_PAYLOAD = (
 _ARCHITECTURE = REPO_ROOT / "ARCHITECTURE.md"
 _SELF_CLASS_RULES = REPO_ROOT / "pipelines" / "self-classification-rules.md"
 _ACTION_CLASSIFICATION = REPO_ROOT / "pipelines" / "action-classification.yaml"
+_ACTION_CLASSIFICATION_PAYLOAD = (
+    REPO_ROOT / "skills" / "pipeline-init" / "references"
+    / "pipeline-payload" / "pipelines" / "action-classification.yaml"
+)
 
 
 def test_run_md_has_judged_executor_handler():
@@ -914,3 +918,24 @@ def test_action_classification_default_is_reversible_write():
     edited, by this run)."""
     text = _read(_ACTION_CLASSIFICATION)
     assert "default_class: reversible_write" in text
+
+
+def test_action_classification_comment_matches_propose_execute_model():
+    """The opt-in comment must describe the propose-execute model, not the
+    deleted per-tool-call 'Handler 3a / every executor action is classified
+    and routed' fiction. Guards both byte-identical copies — the
+    ARCHITECTURE guard alone let this straggler slip through."""
+    for path in (_ACTION_CLASSIFICATION, _ACTION_CLASSIFICATION_PAYLOAD):
+        text = _read(path)
+        assert "Handler 3a" not in text, f"{path} still references Handler 3a"
+        assert "every executor action is classified and routed" not in text, (
+            f"{path} still claims the per-tool-call classification fiction"
+        )
+        # "propose-execute" may wrap across comment lines, so match the token.
+        assert "propose-execute" in text, f"{path} missing propose-execute framing"
+
+
+def test_action_classification_copies_are_byte_identical():
+    assert _ACTION_CLASSIFICATION.read_bytes() == _ACTION_CLASSIFICATION_PAYLOAD.read_bytes(), (
+        "action-classification.yaml canonical and payload mirror diverged"
+    )
