@@ -34,6 +34,8 @@ from hooks.hook_utils import (
     ActiveRun,
     _JUDGE_APPROVED_SIDECAR,
     classify_tool_risk,
+    consume_judge_approval_on_bash_success,
+    permission_decision,
 )
 
 
@@ -125,20 +127,63 @@ def test_matching_sidecar_exempts_the_command(tmp_path: Path) -> None:
     assert "JUDGE_REVIEW_REQUIRED" not in " ".join(reasons)
 
 
-def test_matching_sidecar_is_consumed_one_shot(tmp_path: Path) -> None:
+def test_classify_is_read_only_and_does_not_consume(tmp_path: Path) -> None:
+    # classify_tool_risk runs for BOTH the PreToolUse and PermissionRequest
+    # events, so it must never mutate the sidecar — repeated classification
+    # of an approved command stays exempt and leaves the sidecar in place.
     run = _make_run(tmp_path / ".agent-runs" / "judged-2b")
     command = "git push origin feature/judge"
     _write_approval(run, command)
 
-    # First call is exempt and consumes the sidecar.
     first_severity, _ = classify_tool_risk(_bash(command), [run])
+    second_severity, _ = classify_tool_risk(_bash(command), [run])
     assert first_severity == "warn"
+    assert second_severity == "warn"
+    assert _approval_exists(run)
+
+
+def test_consume_on_bash_success_makes_the_exemption_one_shot(tmp_path: Path) -> None:
+    run = _make_run(tmp_path / ".agent-runs" / "judged-2b2")
+    command = "git push origin feature/judge"
+    _write_approval(run, command)
+
+    # PreToolUse exempts (warn) but does not consume.
+    assert classify_tool_risk(_bash(command), [run])[0] == "warn"
+    assert _approval_exists(run)
+
+    # PostToolUse success consumes the sidecar exactly once.
+    consumed = consume_judge_approval_on_bash_success(_bash(command), [run])
+    assert consumed == command
     assert not _approval_exists(run)
 
-    # Second identical call has no sidecar -> re-denied.
-    second_severity, second_reasons = classify_tool_risk(_bash(command), [run])
-    assert second_severity == "deny"
-    assert "JUDGE_REVIEW_REQUIRED" in " ".join(second_reasons)
+    # A second attempt at the same command has no sidecar -> re-denied.
+    severity, reasons = classify_tool_risk(_bash(command), [run])
+    assert severity == "deny"
+    assert "JUDGE_REVIEW_REQUIRED" in " ".join(reasons)
+
+
+def test_consume_requires_an_exact_match(tmp_path: Path) -> None:
+    run = _make_run(tmp_path / ".agent-runs" / "judged-2b3")
+    _write_approval(run, "git push origin main")
+    consumed = consume_judge_approval_on_bash_success(
+        _bash("git push origin other"), [run]
+    )
+    assert consumed is None
+    assert _approval_exists(run)
+
+
+def test_consume_skips_drafting_and_unjudged_runs(tmp_path: Path) -> None:
+    command = "git push origin feature/judge"
+    drafting = _make_run(
+        tmp_path / ".agent-runs" / "draft", judge_active=True, drafting=True
+    )
+    unjudged = _make_run(tmp_path / ".agent-runs" / "unjudged-2", judge_active=False)
+    _write_approval(drafting, command)
+    _write_approval(unjudged, command)
+    assert consume_judge_approval_on_bash_success(_bash(command), [drafting]) is None
+    assert consume_judge_approval_on_bash_success(_bash(command), [unjudged]) is None
+    assert _approval_exists(drafting)
+    assert _approval_exists(unjudged)
 
 
 def test_sidecar_must_match_exactly(tmp_path: Path) -> None:
@@ -148,7 +193,7 @@ def test_sidecar_must_match_exactly(tmp_path: Path) -> None:
     severity, reasons = classify_tool_risk(_bash("git push origin other"), [run])
     assert severity == "deny"
     assert "JUDGE_REVIEW_REQUIRED" in " ".join(reasons)
-    # And the non-matching approval is left intact (not spuriously consumed).
+    # And the non-matching approval is left intact.
     assert _approval_exists(run)
 
 
@@ -156,8 +201,10 @@ def test_sidecar_whitespace_is_stripped_before_match(tmp_path: Path) -> None:
     run = _make_run(tmp_path / ".agent-runs" / "judged-2d")
     command = "git push origin feature/judge"
     _write_approval(run, "  " + command + "\n")
-    severity, _ = classify_tool_risk(_bash(command), [run])
-    assert severity == "warn"
+    # Read-side match honors a whitespace-padded sidecar.
+    assert classify_tool_risk(_bash(command), [run])[0] == "warn"
+    # Consume-side match honors it too, and clears it.
+    assert consume_judge_approval_on_bash_success(_bash(command), [run]) == command
     assert not _approval_exists(run)
 
 
@@ -184,11 +231,11 @@ def test_approval_sidecar_never_reopens_the_destructive_floor(tmp_path: Path) ->
     command = "git push --force origin main"
     _write_approval(run, command)
     severity, reasons = classify_tool_risk(_bash(command), [run])
-    # Even with an exact-match approval, a floored command stays denied.
+    # Even with an exact-match approval, a floored command stays denied: the
+    # judge branch only runs when severity is not already deny, so the
+    # destructive floor wins and the approval is never even read for it.
     assert severity == "deny"
     assert "destructive" in " ".join(reasons)
-    # The judge branch never fired (severity was already deny), so the
-    # sidecar is left untouched rather than silently consumed.
     assert _approval_exists(run)
 
 
@@ -233,6 +280,32 @@ def test_read_only_action_unaffected_by_judge_routing(tmp_path: Path) -> None:
     severity, reasons = classify_tool_risk(_bash("git status"), [run])
     assert severity == "allow"
     assert "JUDGE_REVIEW_REQUIRED" not in " ".join(reasons)
+
+
+# ---------------------------------------------------------------------------
+# PermissionRequest path — classify_tool_risk's second caller must be read-only
+# ---------------------------------------------------------------------------
+
+
+def test_permission_request_path_does_not_consume_the_sidecar(tmp_path: Path) -> None:
+    # permission_decision (the PermissionRequest hook) also calls
+    # classify_tool_risk. An approved external command must NOT be denied
+    # there, and the one-shot sidecar must survive for the PostToolUse
+    # consume — otherwise whichever event fires first would burn it.
+    run = _make_run(tmp_path / ".agent-runs" / "judged-perm")
+    command = "git push origin feature/judge"
+    _write_approval(run, command)
+    decision = permission_decision(_bash(command), [run])
+    assert decision is None
+    assert _approval_exists(run)
+
+
+def test_permission_request_denies_unapproved_external(tmp_path: Path) -> None:
+    run = _make_run(tmp_path / ".agent-runs" / "judged-perm2")
+    decision = permission_decision(_bash("git push origin main"), [run])
+    assert decision is not None
+    message = decision["hookSpecificOutput"]["decision"]["message"]
+    assert "JUDGE_REVIEW_REQUIRED" in message
 
 
 # ---------------------------------------------------------------------------

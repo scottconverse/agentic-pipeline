@@ -1133,26 +1133,30 @@ def classify_tool_risk(event: dict[str, Any], runs: list[ActiveRun]) -> tuple[st
     # only when severity is not already "deny", so a judge allow or the
     # approval sidecar can NEVER reopen the floor. The orchestrator exempts
     # its single judge-approved call by writing the exact command to
-    # judge-approved-next.txt; the match is consumed one-shot.
+    # judge-approved-next.txt; this check is READ-ONLY — a matching sidecar
+    # leaves the action at warn and is consumed later by
+    # consume_judge_approval_on_bash_success on PostToolUse success. The
+    # read must not mutate state here because classify_tool_risk runs for
+    # both the PreToolUse and PermissionRequest events; consuming here would
+    # let whichever event fires first delete the sidecar and the other
+    # re-deny the approved action.
     if (
         severity != "deny"
         and runs
         and runs[0].judge_active
         and not runs[0].is_drafting
         and _matches_any(command, EXTERNAL_OR_RELEASE_PATTERNS)
+        and not _command_matches_judge_approval(runs[0], command)
     ):
-        if _command_matches_judge_approval(runs[0], command):
-            _consume_judge_approval(runs[0])
-        else:
-            severity = "deny"
-            reasons.append(
-                "JUDGE_REVIEW_REQUIRED: external-facing or release-class action "
-                "blocked during a judged run. STOP and write a "
-                "pending-action.yaml proposal (executor.md stop-and-propose "
-                "protocol) and return; the orchestrator spawns the judge and "
-                "runs the action only on an allow verdict (writing "
-                "judge-approved-next.txt first). Direct execution is blocked."
-            )
+        severity = "deny"
+        reasons.append(
+            "JUDGE_REVIEW_REQUIRED: external-facing or release-class action "
+            "blocked during a judged run. STOP and write a "
+            "pending-action.yaml proposal (executor.md stop-and-propose "
+            "protocol) and return; the orchestrator spawns the judge and "
+            "runs the action only on an allow verdict (writing "
+            "judge-approved-next.txt first). Direct execution is blocked."
+        )
     return severity, reasons
 
 
@@ -1405,9 +1409,13 @@ def _bash_matches_recheck(command: str, pending_lines: list[str]) -> str | None:
 # JUDGE_REVIEW_REQUIRED reason, so the stop-and-propose protocol is
 # non-bypassable. The orchestrator runs a judge-approved action by writing
 # the EXACT command to `judge-approved-next.txt` immediately before running
-# it; the hook exempts that single matching call and consumes the sidecar so
-# the exemption is one-shot. The destructive/secret deny floor is evaluated
-# first and is never exempted by this sidecar (see classify_tool_risk).
+# it. classify_tool_risk only READS the sidecar (a match leaves the action
+# at warn) so the verdict is stable across the PreToolUse and
+# PermissionRequest events that both call it; the consume happens once, on
+# PostToolUse success, in consume_judge_approval_on_bash_success — mirroring
+# the pending-recheck sidecar (record on write, pop on success). The
+# destructive/secret deny floor is evaluated first and is never exempted by
+# this sidecar (see classify_tool_risk).
 _JUDGE_APPROVED_SIDECAR = "judge-approved-next.txt"
 
 
@@ -1450,6 +1458,34 @@ def _consume_judge_approval(run: ActiveRun) -> None:
             sidecar.unlink()
         except OSError:
             pass
+
+
+def consume_judge_approval_on_bash_success(
+    event: dict[str, Any], runs: list[ActiveRun]
+) -> str | None:
+    """Clear the one-shot judge-approval sidecar after the approved command ran.
+
+    PostToolUse-on-success counterpart to the read-only check inside
+    classify_tool_risk. classify_tool_risk runs for both the PreToolUse and
+    PermissionRequest events, so it must not mutate the sidecar — otherwise
+    whichever event fires first would delete it and the other would re-deny
+    the just-approved action. Instead the consume happens here, once, after
+    the command actually executed, exactly as pop_pending_recheck_on_bash_success
+    clears the policy-recheck sidecar.
+
+    Returns the consumed command (stripped) when a non-drafting judged run had
+    a matching approval sidecar, else None.
+    """
+    command = tool_command(event)
+    if not command:
+        return None
+    for run in runs:
+        if run.is_drafting or not run.judge_active:
+            continue
+        if _command_matches_judge_approval(run, command):
+            _consume_judge_approval(run)
+            return command.strip()
+    return None
 
 
 def policy_recheck_decision(

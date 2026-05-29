@@ -30,6 +30,7 @@ try:
         append_hook_event,
         classify_tool_risk,
         cleanup_stale_plugin_caches,
+        consume_judge_approval_on_bash_success,
         discover_active_runs,
         marketplace_update_available_context,
         memory_override_context,
@@ -56,6 +57,7 @@ except ModuleNotFoundError:  # pragma: no cover - package import from tests
         append_hook_event,
         classify_tool_risk,
         cleanup_stale_plugin_caches,
+        consume_judge_approval_on_bash_success,
         discover_active_runs,
         marketplace_update_available_context,
         memory_override_context,
@@ -311,6 +313,17 @@ def handle_post_tool_use(event: dict) -> int:
             record_hook_memory(
                 root, "PostToolUse", "policy-recheck cleared: " + popped[:300],
                 {"severity": "info", "rule": "policy_recheck_cleared"},
+            )
+        # v0.4: consume the one-shot judge-approval sidecar after the approved
+        # external action actually ran, so the exemption can't be reused and
+        # classify_tool_risk can stay a read-only classifier across the
+        # PreToolUse and PermissionRequest events.
+        consumed = consume_judge_approval_on_bash_success(event, runs)
+        if consumed:
+            append_hook_event(root, "PostToolUse", "judge-approval consumed: " + consumed[:200])
+            record_hook_memory(
+                root, "PostToolUse", "judge-approval consumed: " + consumed[:300],
+                {"severity": "info", "rule": "judge_approval_consumed"},
             )
     context = tool_failure_context(event)
     if not context:
