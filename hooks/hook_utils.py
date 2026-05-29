@@ -33,8 +33,6 @@ STALE_STANDALONE_SKILLS = {
     "pipeline-init",
     "run",
     "show-run-status",
-    "grant-autonomous",
-    "run-autonomous",
 }
 NAMESPACED_PREFIX = "agent-pipeline-claude:"
 MAX_MEMORY_TEXT = 1200
@@ -49,6 +47,21 @@ DESTRUCTIVE_PATTERNS = (
     r"\b(drop\s+database|drop\s+table|truncate\s+table)\b",
     r"\bdocker\s+push\b",
     r"\bkubectl\s+(apply|delete|replace)\b",
+    # v3.0.1 (audit ENG-001): the original denylist caught the careless case but
+    # not trivial evasions. Close them — rm force+recursive in either flag order /
+    # long form / no-preserve-root, other destructive verbs, raw-device writes,
+    # pipe-fetched-content-into-an-interpreter (curl|sh, base64 -d|sh), fork bomb.
+    r"\brm\s+-[^\n;|&]*f[^\n;|&]*r\b",
+    r"\brm\b[^\n;|&]*--recursive\b[^\n;|&]*--force\b",
+    r"\brm\b[^\n;|&]*--force\b[^\n;|&]*--recursive\b",
+    r"\brm\b[^\n;|&]*--no-preserve-root\b",
+    r"\bdd\b[^\n;|&]*\bof=/dev/",
+    r"\bmkfs(?:\.[a-z0-9]+)?\b",
+    r"\bfind\b[^\n;|&]*\s-delete\b",
+    r"\bfind\b[^\n;|&]*\s-exec\b[^\n;|&]*\brm\b",
+    r">\s*/dev/(?:sd[a-z]|nvme\d|disk\d)\b",
+    r"\|\s*(?:sh|bash|zsh|dash|ksh|python[0-9.]*|node|perl|ruby)\b",
+    r":\s*\(\s*\)\s*\{",
 )
 EXTERNAL_OR_RELEASE_PATTERNS = (
     r"\bgit\s+push\b",
@@ -66,6 +79,21 @@ DEPENDENCY_PATTERNS = (
 SECRET_PATTERNS = (
     r"(?<![\w])(?-i:[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD)[A-Z0-9_]*)\s*=",
     r"\b(cat|type|Get-Content)\b[^\n;|&]*(id_rsa|\.env|credentials|secrets?)\b",
+    # v3.0.1 (audit ENG-002 / QA-001): a command echoing/exporting a literal
+    # secret VALUE is a leak too. Kept in lockstep with the literal-token subset
+    # of memory/redaction._DEFAULT_SECRET_PATTERNS (verified by
+    # tests/test_memory_layer.py::test_hook_and_memory_secret_patterns_lockstep).
+    r"\bgh[pousr]_[A-Za-z0-9]{20,}\b",
+    r"\bgithub_pat_[A-Za-z0-9_]{20,}\b",
+    r"\bglpat-[A-Za-z0-9_-]{20,}\b",
+    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b",
+    r"\bAIza[0-9A-Za-z_-]{35}\b",
+    r"\bAKIA[0-9A-Z]{16}\b",
+    r"\b(?:sk|m0)-[A-Za-z0-9_-]{20,}",
+    r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b",
+    r"\bnpm_[A-Za-z0-9]{20,}\b",
+    r"\bya29\.[0-9A-Za-z_-]{20,}",
+    r"-----BEGIN [A-Z ]+PRIVATE KEY-----",
 )
 
 # v3.0.0 WS-7 (Gap 2): context-exhaustion early warning constants. Window
@@ -144,8 +172,11 @@ def repo_root_from_event(event: dict[str, Any]) -> Path:
     or .claude-plugin/ or .git/.
     """
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if project_dir:
+    if project_dir and Path(project_dir).is_dir():
         return Path(project_dir).resolve()
+    # v3.0.1 (audit QA-003/ENG-005): ignore a stale/non-existent CLAUDE_PROJECT_DIR
+    # rather than resolving every gate against the wrong tree; fall through to
+    # event cwd + the .agent-runs/.claude-plugin/.git marker walk below.
     cwd = event.get("cwd") or os.getcwd()
     path = Path(str(cwd)).resolve()
     for candidate in (path, *path.parents):

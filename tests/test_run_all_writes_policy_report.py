@@ -183,7 +183,7 @@ def test_pipeline_payload_run_all_matches_top_level() -> None:
         "check_pipeline_control_loop",
         "check_execute_readiness",
         "check_decision_ledger",
-        "agent-pipeline-claude 2.0.0",
+        "agent-pipeline-claude 3.0.1",
     ):
         assert needle in top_level, f"top-level run_all missing `{needle}`"
         assert needle in mirror, f"pipeline-payload run_all mirror missing `{needle}`"

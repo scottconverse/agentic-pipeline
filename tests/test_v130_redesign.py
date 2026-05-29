@@ -113,20 +113,18 @@ def test_no_autonomous_mode_awareness_in_payload_roles():
 # Skills: deprecation shims
 # ---------------------------------------------------------------------------
 
-def test_run_autonomous_is_deprecation_shim():
-    skill_md = REPO_ROOT / "skills" / "run-autonomous" / "SKILL.md"
-    text = _read(skill_md)
-    assert "Deprecated" in text or "deprecated" in text
-    assert "v1.3.0" in text
-    # Must redirect users to /run
-    assert "/agent-pipeline-claude:run" in text
-
-
-def test_grant_autonomous_is_deprecation_shim():
-    skill_md = REPO_ROOT / "skills" / "grant-autonomous" / "SKILL.md"
-    text = _read(skill_md)
-    assert "Deprecated" in text or "deprecated" in text
-    assert "v1.3.0" in text
+def test_deprecated_autonomous_skills_removed():
+    """v3.0.1 (audit DOC-002 / UX-003): run-autonomous and grant-autonomous were
+    deprecated no-ops whose descriptions still advertised the modal gate model the
+    product removed (and the hook layer now denies with MODAL_BUDGET_EXCEEDED).
+    They are deleted from the shipped payload; /agent-pipeline-claude:run is the
+    single entry point."""
+    assert not (REPO_ROOT / "skills" / "run-autonomous").exists(), (
+        "run-autonomous skill should be removed in v3.0.1"
+    )
+    assert not (REPO_ROOT / "skills" / "grant-autonomous").exists(), (
+        "grant-autonomous skill should be removed in v3.0.1"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +436,7 @@ def test_readme_upgrade_instruction_targets_v2():
     assert "git checkout v1.1.0" not in text, (
         "README still tells operators to `git checkout v1.1.0` — stale"
     )
-    assert "git checkout v2.2.2" in text
+    assert "git checkout v3.0.1" in text
 
 
 def test_user_manual_upgrade_instruction_targets_v2():
@@ -446,7 +444,7 @@ def test_user_manual_upgrade_instruction_targets_v2():
     snippet (same instruction in both surfaces)."""
     text = _read(REPO_ROOT / "USER-MANUAL.md")
     assert "git checkout v1.1.0" not in text
-    assert "git checkout v2.2.2" in text
+    assert "git checkout v3.0.1" in text
 
 
 def test_architecture_current_version_is_v2():
@@ -457,7 +455,7 @@ def test_architecture_current_version_is_v2():
     assert "**Current version: v1.1.0.**" not in text, (
         "ARCHITECTURE still claims Current version: v1.1.0"
     )
-    assert "**Current version: v2.0.0.**" in text
+    assert "**Current version: v3.0.1.**" in text
 
 
 def test_tests_readme_version_label_is_v2():

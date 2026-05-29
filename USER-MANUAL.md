@@ -2,7 +2,7 @@
 
 Ship multi-step Claude Code work that doesn't drift. The plugin reads your project's spec, drafts a per-run scope contract, and shows it to you in chat with a deterministic keyword gate (`APPROVE` / `REVISE` / `VIEW`). Then it runs research → plan → execute → verify → critique end-to-end with three chat-based human gates, an opt-in real-time judge, machine-checkable auto-promote, **eleven lifecycle hooks** that enforce the pipeline at runtime, **directive-contract pre-approval** for conformant runs, **persistent file-backed memory** that survives context compaction, and an **MCP Mem0 layer** for cross-session continuity.
 
-**Version:** 2.2.2
+**Version:** 3.0.1
 **License:** Apache 2.0
 
 ---
@@ -21,7 +21,7 @@ The `agent-pipeline-claude` marketplace is third-party. So after each new releas
 # Refresh the marketplace clone to the new release:
 cd ~/.claude/plugins/marketplaces/agent-pipeline-claude
 git pull
-git checkout v2.2.2
+git checkout v3.0.1
 
 # Install the new version into the cache + update installed_plugins.json:
 claude plugin install agent-pipeline-claude@agent-pipeline-claude
@@ -318,7 +318,7 @@ That's the whole command. The skill:
 2. Picks the pipeline type (`feature` by default; `bugfix` if your description contains "bug" / "fix" / "regression"; `module-release` if it contains "release" / "ship" / "tag").
 3. Generates a run id: `YYYY-MM-DD-<slug>` from your description.
 4. Spawns the manifest-drafter subagent against your project's spec / release-plan / scope-lock / design notes.
-5. Pastes the drafted manifest in chat with a one-line summary like `"Drafted from docs/releases/v0.4-scope-lock.md §1 + docs/research/v04-slice1-design.md. 8/11 fields auto-derived, 3 hand-required."` followed by the chat gate prompt naming `APPROVE` / `REVISE` / `VIEW` as the recognized keywords.
+5. Pastes the drafted manifest in chat with a one-line summary like `"Drafted from docs/releases/v0.4-scope-lock.md §1 + docs/research/v04-slice1-design.md. 8/11 fields auto-derived, 3 need your confirmation."` followed by the chat gate prompt naming `APPROVE` / `REVISE` / `VIEW` as the recognized keywords.
 6. Waits for your reply. Parses the first non-whitespace token, case-insensitive.
 7. On `APPROVE`, orchestrates the rest of the pipeline. On `REVISE`, sends the manifest back to the drafter with your revision text (up to 5 cycles). On `VIEW`, prints the full manifest verbatim and re-asks.
 
@@ -458,7 +458,7 @@ To upgrade:
 ```
 cd ~/.claude/plugins/marketplaces/agent-pipeline-claude
 git pull
-git checkout v2.2.1
+git checkout v3.0.1
 ```
 
 Then fully quit and reopen Cowork.

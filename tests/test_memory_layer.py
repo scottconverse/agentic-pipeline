@@ -256,6 +256,89 @@ def test_redaction_passes_clean_text() -> None:
     assert result.matched_paths == ()
 
 
+# v3.0.1 (audit ENG-002 / QA-001): token formats that previously passed
+# scrub() unredacted (the GitHub clause required a hyphen where real tokens
+# use an underscore; Slack/GitLab/Google/JWT/URL/bare-credential uncovered).
+# NOTE: every value below is a synthetic test fixture. Each recognizable
+# provider prefix is split across adjacent string literals (Python concatenates
+# them) so no full real-token-shaped string appears in the source — this keeps
+# GitHub's secret-scanning push protection from flagging these fakes.
+_SECRETS_LEAKED_BEFORE_V301 = (
+    "gh" "p_abcdefghijklmnopqrstuvwxyz0123456789",
+    "gh" "o_abcdefghijklmnopqrstuvwxyz0123456789",
+    "gh" "s_abcdefghijklmnopqrstuvwxyz0123456789",
+    "gh" "r_abcdefghijklmnopqrstuvwxyz0123456789",
+    "github" "_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz1234567890",
+    "gl" "pat-abcdefghij1234567890",
+    "xo" "xb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx",
+    "xo" "xp-123456789012-123456789012-abcdefghij",
+    "AI" "zaSyA1234567890abcdefghijklmnopqrstuv",
+    "ey" "JhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N",
+    "postgres://dbuser:" "s3cr3tp4ss@db.internal:5432/app",
+    "password = hunter2supersecret",
+    "api_key: AKfycbABCDEF1234567890ghijkl",
+    "sk" "_live_abcdefghijklmnopqrstuvwxyz0123",
+    "npm" "_abcdefghijklmnopqrstuvwxyz0123456789",
+    "ya" "29.a0AbCdEfGhIjKlMnOpQrStUvWxYz1234567890",
+)
+
+
+def test_redaction_blocks_modern_token_formats() -> None:
+    for secret in _SECRETS_LEAKED_BEFORE_V301:
+        result = scrub(f"captured working-memory value: {secret}")
+        assert result.allowed is False, f"scrub() failed to block: {secret!r}"
+
+
+def test_redaction_still_blocks_legacy_formats() -> None:
+    for secret in (
+        "AKIAIOSFODNN7EXAMPLE",  # AWS docs example value (not a real key)
+        "sk" "-proj-abcdefghijklmnopqrstuvwxyz0123",
+        "Bearer ey" "Jhbgciabcdefghijklmnopqrstuvwxyz",
+        "-----BEGIN RSA PRIVATE KEY-----",
+    ):
+        assert scrub(f"value: {secret}").allowed is False, secret
+
+
+def test_redaction_no_false_positive_on_clean_text() -> None:
+    for clean in (
+        "The user prefers JWT auth over session cookies.",
+        "See the deployment documentation for the rollout steps.",
+        "Clone from https://github.com/scottconverse/agent-pipeline-claude",
+        "Remote is git@github.com:scottconverse/agent-pipeline-claude.git",
+        "The token bucket rate limiter allows 10 requests per second.",
+    ):
+        assert scrub(clean).allowed is True, f"false positive on clean text: {clean!r}"
+
+
+def test_hook_and_memory_secret_patterns_lockstep() -> None:
+    """The PreToolUse command-secret denylist (hooks/hook_utils.SECRET_PATTERNS)
+    must catch the same literal token VALUES as the memory redaction layer, so a
+    command echoing a token is denied just as a memory write containing it is
+    dropped (audit ENG-002/QA-001 lockstep — they share the gap)."""
+    import re
+
+    from hooks.hook_utils import SECRET_PATTERNS
+
+    literal_tokens = (
+        "gh" "p_abcdefghijklmnopqrstuvwxyz0123456789",
+        "github" "_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz1234567890",
+        "gl" "pat-abcdefghij1234567890",
+        "xo" "xb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx",
+        "AI" "zaSyA1234567890abcdefghijklmnopqrstuv",
+        "AKIAIOSFODNN7EXAMPLE",
+        "sk" "-proj-abcdefghijklmnopqrstuvwxyz0123",
+        "sk" "_live_abcdefghijklmnopqrstuvwxyz0123",
+        "npm" "_abcdefghijklmnopqrstuvwxyz0123456789",
+        "ya" "29.a0AbCdEfGhIjKlMnOpQrStUvWxYz1234567890",
+    )
+    for tok in literal_tokens:
+        cmd = f'echo "{tok}" >> notes.txt'
+        assert any(re.search(p, cmd) for p in SECRET_PATTERNS), (
+            f"hooks SECRET_PATTERNS missed literal token {tok!r}"
+        )
+        assert scrub(cmd).allowed is False, f"memory scrub() missed literal token {tok!r}"
+
+
 def test_policy_rejects_add_with_redacted_content(tmp_path) -> None:
     adapter = MockAdapter()
     policy = PolicyLayer(adapter, _enabled_config(), _fake_identity(tmp_path))
@@ -807,6 +890,15 @@ def test_pipelines_template_redaction_matches_canonical() -> None:
     assert "Bearer" in pattern_union, "template missing Bearer-token pattern"
     assert "~/.kube/config" in paths, "template missing ~/.kube/config block path"
 
+    # v3.0.1 (audit ENG-002/QA-001): the template's secret_patterns must match
+    # the canonical list exactly, so operators who copy it inherit full coverage.
+    from memory.redaction import _DEFAULT_SECRET_PATTERNS
+
+    assert tuple(patterns) == _DEFAULT_SECRET_PATTERNS, (
+        "mem0-config-template.json secret_patterns drifted from canonical "
+        "memory/redaction._DEFAULT_SECRET_PATTERNS"
+    )
+
 
 def test_scaffold_payload_redaction_matches_canonical() -> None:
     """The scaffold mirror under skills/pipeline-init/references/.../
@@ -826,6 +918,13 @@ def test_scaffold_payload_redaction_matches_canonical() -> None:
     assert "AKIA" in pattern_union
     assert "Bearer" in pattern_union
     assert "~/.kube/config" in paths
+
+    from memory.redaction import _DEFAULT_SECRET_PATTERNS
+
+    assert tuple(patterns) == _DEFAULT_SECRET_PATTERNS, (
+        "scaffold mem0-config-template.json secret_patterns drifted from canonical "
+        "memory/redaction._DEFAULT_SECRET_PATTERNS"
+    )
 
 
 def test_cmd_test_oss_hint_mentions_8888_when_misconfigured(tmp_path, monkeypatch, capsys) -> None:

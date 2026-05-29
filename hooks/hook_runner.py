@@ -531,6 +531,25 @@ HANDLERS = {
 }
 
 
+# Events whose handler returns a decision the runtime enforces. A handler
+# crash on these must fail CLOSED (deny/block), never silently let the action
+# through (audit ENG-003).
+DECISION_EVENTS = frozenset({"PreToolUse", "PermissionRequest", "Stop"})
+
+
+def _fail_closed_payload(event_name: str, reason: str) -> dict:
+    """Build a deny/block payload in the correct schema for the event."""
+    if event_name == "Stop":
+        return {"decision": "block", "reason": reason}
+    # PreToolUse / PermissionRequest
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "decision": {"behavior": "deny", "message": reason},
+        }
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv[1:]
     event_name = argv[0] if argv else ""
@@ -539,7 +558,26 @@ def main(argv: list[str] | None = None) -> int:
     handler = HANDLERS.get(event_name)
     if handler is None:
         return 0
-    return handler(event)
+    try:
+        return handler(event)
+    except Exception as exc:  # noqa: BLE001 — a trust-boundary gate must fail CLOSED
+        # ENG-003: the prior top-level dispatch had no guard, so a handler that
+        # raised on a malformed/agent-corrupted run dir exited non-zero, which
+        # Claude Code treats as a hook *error* — the tool proceeds un-gated.
+        if event_name in DECISION_EVENTS:
+            reason = (
+                f"Agent Pipeline {event_name} hook errored "
+                f"({type(exc).__name__}); failing closed (deny). Resolve the run "
+                "state and retry — do not proceed un-gated."
+            )
+            return write_json(_fail_closed_payload(event_name, reason))
+        # Observation-only events (PostToolUse, SubagentStop, SessionEnd, …):
+        # never break the session — log to stderr and return 0.
+        print(
+            f"[agent-pipeline-claude] {event_name} hook error (non-blocking): {exc}",
+            file=sys.stderr,
+        )
+        return 0
 
 
 if __name__ == "__main__":

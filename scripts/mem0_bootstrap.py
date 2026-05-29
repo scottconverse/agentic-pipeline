@@ -70,6 +70,25 @@ MEM0_VENDOR_REPO = "https://github.com/mem0ai/mem0.git"
 MEM0_VENDOR_PIN = "75a37ec93db7278e3bd9aaf2aa3d6e5139e6789d"
 
 
+def _verify_vendor_pin(vendor_dir: Path) -> None:
+    """Verify the checked-out HEAD equals the pinned SHA before the vendored
+    tree is executed via docker compose (audit ENG-010). A shallow clone could
+    silently fail to contain an older pin; this catches that and any moved ref."""
+    proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=vendor_dir, check=True, capture_output=True, text=True
+    )
+    head = proc.stdout.strip()
+    if head != MEM0_VENDOR_PIN:
+        raise subprocess.CalledProcessError(
+            1,
+            "git rev-parse HEAD",
+            output=(
+                f"vendor/mem0 HEAD {head} does not match pinned "
+                f"{MEM0_VENDOR_PIN}; refusing to run an unverified tree."
+            ),
+        )
+
+
 def _ensure_vendor_mem0(repo_root: Path) -> Path:
     """Clone or update vendor/mem0/ to the pinned commit. Returns the path
     to `vendor/mem0/server/` where docker-compose.yml lives.
@@ -83,17 +102,22 @@ def _ensure_vendor_mem0(repo_root: Path) -> Path:
     if vendor_dir.exists() and (vendor_dir / ".git").exists():
         subprocess.run(["git", "fetch", "origin"], cwd=vendor_dir, check=True, capture_output=True, text=True)
         subprocess.run(["git", "checkout", MEM0_VENDOR_PIN], cwd=vendor_dir, check=True, capture_output=True, text=True)
+        if MEM0_VENDOR_PIN != "main":
+            _verify_vendor_pin(vendor_dir)
         return vendor_dir / "server"
 
     vendor_dir.parent.mkdir(parents=True, exist_ok=True)
+    # v3.0.1 (audit ENG-010): full clone (not --depth 50) so the pinned commit is
+    # always reachable, then verify HEAD before running docker compose against it.
     subprocess.run(
-        ["git", "clone", "--depth", "50", MEM0_VENDOR_REPO, str(vendor_dir)],
+        ["git", "clone", MEM0_VENDOR_REPO, str(vendor_dir)],
         check=True,
         capture_output=True,
         text=True,
     )
     if MEM0_VENDOR_PIN != "main":
         subprocess.run(["git", "checkout", MEM0_VENDOR_PIN], cwd=vendor_dir, check=True, capture_output=True, text=True)
+        _verify_vendor_pin(vendor_dir)
     return vendor_dir / "server"
 
 
@@ -238,8 +262,11 @@ def cmd_test(args: argparse.Namespace) -> int:
     root = _project_root()
     config = load_config(root)
     if not config.enabled:
+        # QA-010: NOT_ENABLED is a valid opt-out state, not a smoke-test failure.
+        # Exit 0 so CI/scripts don't read "memory is off" as "memory is broken";
+        # exit 1 is reserved for a configured-but-broken backend (see cmd_test rc=2).
         print("mem0_bootstrap: test - NOT_ENABLED. No .mem0/config.json and no env override. File-backed Layer A still works.")
-        return 1
+        return 0
     identity = derive_identity(root)
     adapter = build_adapter(config)
     policy = build_policy(config, identity, adapter=adapter)
@@ -407,7 +434,7 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", action="version", version="agent-pipeline-claude 2.0.0")
+    parser.add_argument("--version", action="version", version="agent-pipeline-claude 3.0.1")
     subs = parser.add_subparsers(dest="command", required=True)
 
     p_init = subs.add_parser("init", help="Create .mem0/config.json + consent stub")

@@ -65,10 +65,15 @@ EVIDENCE_HEADING_PATTERN = re.compile(
 # Citation heuristics: anything that suggests the critic actually looked
 # at concrete artifacts.
 CITATION_PATTERNS = (
-    re.compile(r"[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,5}(?::\d+)?"),  # file path, optionally :line
+    # v3.0.1 (audit ENG-006): require a KNOWN source extension so ordinary prose
+    # ("e.g.", "i.e.", "v3.0.0", "U.S. spec") no longer counts as a file-path
+    # citation and rubber-stamps the evidence gate.
+    re.compile(
+        r"\b[\w./-]+\.(?:py|md|ya?ml|json|tsx?|jsx?|go|rs|toml|cfg|ini|sh|txt|html|css)(?::\d+)?\b"
+    ),  # file path with a known source extension, optionally :line
     re.compile(r"`(?:grep|rg|cat|head|tail|git|gh|npm|pytest|ruff|mypy)\b[^`]*`"),
     re.compile(r"`\$\s+[^`]+`"),  # `$ command`
-    re.compile(r"line\s+\d+", re.IGNORECASE),
+    re.compile(r"\bline\s+\d+\b", re.IGNORECASE),
 )
 
 

@@ -294,6 +294,13 @@ def build_adapter(config) -> MemoryAdapter:
     Returns NullAdapter when disabled. Defers Platform/OSS SDK import to
     first method call.
     """
+    if not hasattr(config, "enabled"):
+        # QA-004: a plain mapping (e.g. parsed JSON) used to hit `config.enabled`
+        # with an opaque AttributeError; name the contract instead.
+        raise TypeError(
+            "build_adapter expects a Mem0Config; got "
+            f"{type(config).__name__} — call load_config() first."
+        )
     if not config.enabled:
         return NullAdapter()
     if config.mode == "platform":

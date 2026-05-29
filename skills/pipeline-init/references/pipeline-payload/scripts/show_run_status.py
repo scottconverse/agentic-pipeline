@@ -114,7 +114,7 @@ def summarize_run(run_dir: Path) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", action="version", version="agent-pipeline-claude 2.0.0")
+    parser.add_argument("--version", action="version", version="agent-pipeline-claude 3.0.1")
     parser.add_argument("--run", required=True, help="Pipeline run id under .agent-runs/.")
     args = parser.parse_args()
 

@@ -1,9 +1,9 @@
 {
    "metadata" : {
-      "description" : "Run multi-step Claude Code work without drift. v2.0 adds eleven Cowork lifecycle hooks, directive-contract pre-approval, persistent file-backed run memory, an MCP Mem0 cross-session layer, intake skill, scope-lock authority, DoD readiness, and a centralized stop validator. Codex stays lighter; claude takes the heavier hand.",
+      "description" : "Run multi-step Claude Code work without drift. Eleven Cowork lifecycle hooks, three chat-based keyword gates, directive-contract pre-approval, persistent file-backed run memory with SHA-256 integrity, an opt-in real-time judge, per-stage model/effort binding, an MCP Mem0 cross-session layer, scope-lock authority, DoD readiness, and a centralized stop validator. Codex stays lighter; Claude takes the heavier hand.",
       "homepage" : "https://scottconverse.github.io/agent-pipeline-claude/",
       "repository" : "https://github.com/scottconverse/agent-pipeline-claude",
-      "version" : "3.0.0"
+      "version" : "3.0.1"
    },
    "name" : "agent-pipeline-claude",
    "owner" : {
@@ -16,7 +16,7 @@
             "email" : "sconverse@gmail.com",
             "name" : "Scott Converse"
          },
-         "description" : "/agent-pipeline-claude:run orchestrates multi-step Claude Code work end-to-end. v2.0 enforcement: eleven Cowork lifecycle hooks (SessionStart/UserPromptSubmit/PreToolUse/PermissionRequest/PostToolUse/PostToolUseFailure/PreCompact/PostCompact/SubagentStop/Stop/SessionEnd) deny destructive commands, block out-of-scope writes during active runs, and refuse invalid pipeline stops. Persistent file-backed memory at .agent-runs/<run-id>/memory/ survives context compaction. Optional directive-contract pre-approval (SHA-256-bound) auto-fires conformant manifest/plan gates. /agent-pipeline-claude:mem0 manages the MCP cross-session Mem0 layer; OSS-default, Platform behind consent.",
+         "description" : "/agent-pipeline-claude:run orchestrates multi-step Claude Code work end-to-end. Eleven Cowork lifecycle hooks (SessionStart/UserPromptSubmit/PreToolUse/PermissionRequest/PostToolUse/PostToolUseFailure/PreCompact/PostCompact/SubagentStop/Stop/SessionEnd) deny destructive commands, block out-of-scope writes during active runs, and refuse invalid pipeline stops. Three chat-based keyword gates (APPROVE/REVISE/REPLAN/BLOCK/VIEW). Persistent file-backed memory at .agent-runs/<run-id>/memory/ survives context compaction and is SHA-256 integrity-checked on reload. Optional directive-contract pre-approval (SHA-256-bound) auto-fires conformant manifest/plan gates; an opt-in real-time judge supervises risky actions before they run. /agent-pipeline-claude:mem0 manages the MCP cross-session Mem0 layer; OSS-default, Platform behind consent.",
          "homepage" : "https://scottconverse.github.io/agent-pipeline-claude/",
          "keywords" : [
             "agent",
@@ -34,7 +34,7 @@
          "license" : "Apache-2.0",
          "name" : "agent-pipeline-claude",
          "source" : "./",
-         "version" : "3.0.0"
+         "version" : "3.0.1"
       }
    ]
 }

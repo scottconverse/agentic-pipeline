@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import re
+import sys
 from pathlib import Path
 
 
@@ -38,7 +39,18 @@ def find_repo_root(script_file: str) -> Path:
     """
     env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
     if env_dir:
-        return Path(env_dir).resolve()
+        candidate = Path(env_dir)
+        if candidate.is_dir():
+            return candidate.resolve()
+        # v3.0.1 (audit QA-003/ENG-005): a stale/wrong CLAUDE_PROJECT_DIR was
+        # trusted unconditionally, silently pointing every gate at the wrong
+        # tree. Reject a value that isn't an existing directory and fall through
+        # to git/marker detection rather than validating against nothing.
+        print(
+            f"policy_utils: CLAUDE_PROJECT_DIR={env_dir!r} is not an existing "
+            "directory; ignoring it and falling back to git/marker detection.",
+            file=sys.stderr,
+        )
     script_dir = Path(script_file).resolve().parent
     if script_dir.name == "policy" and script_dir.parent.name == "scripts":
         return script_dir.parents[1]

@@ -46,7 +46,7 @@ def evaluate_final_response_gate(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--version", action="version", version="agent-pipeline-claude 2.0.0"
+        "--version", action="version", version="agent-pipeline-claude 3.0.1"
     )
     parser.add_argument(
         "--run-dir",

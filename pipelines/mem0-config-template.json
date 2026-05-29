@@ -45,10 +45,21 @@
   },
   "redaction": {
     "secret_patterns": [
-      "(?:sk|m0|gh[pousr])-[A-Za-z0-9_-]{20,}",
-      "-----BEGIN [A-Z ]+PRIVATE KEY-----",
+      "\\b(?:sk|m0)-[A-Za-z0-9_-]{20,}",
+      "\\bgh[pousr]_[A-Za-z0-9]{20,}\\b",
+      "\\bgithub_pat_[A-Za-z0-9_]{20,}\\b",
+      "\\bglpat-[A-Za-z0-9_-]{20,}\\b",
+      "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b",
+      "\\bAIza[0-9A-Za-z_-]{35}\\b",
       "\\bAKIA[0-9A-Z]{16}\\b",
-      "\\bBearer\\s+[A-Za-z0-9._-]{20,}"
+      "\\beyJ[A-Za-z0-9_-]{6,}\\.eyJ[A-Za-z0-9_-]{6,}\\.[A-Za-z0-9_-]{6,}",
+      "[A-Za-z][A-Za-z0-9+.\\-]*://[^:@/\\s]+:[^@/\\s]+@",
+      "-----BEGIN [A-Z ]+PRIVATE KEY-----",
+      "\\bBearer\\s+[A-Za-z0-9._-]{20,}",
+      "(?i)\\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret)\\b\\s*[:=]\\s*\\S{6,}",
+      "\\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\\b",
+      "\\bnpm_[A-Za-z0-9]{20,}\\b",
+      "\\bya29\\.[0-9A-Za-z_-]{20,}"
     ],
     "block_paths": ["~/.ssh", "~/.aws", "~/.config/gcloud", "~/.kube/config"]
   },

@@ -61,24 +61,71 @@ RUN_DIR = REPO_ROOT / ".agent-runs"
 
 
 def _read_manifest(manifest_path: Path) -> dict[str, object]:
-    """Parse the manifest into a flat dict.
+    """Parse the manifest into a flat dict keyed by pipeline_run field.
 
-    Stdlib-only minimal YAML parser, matching the conventions used by
-    check_allowed_paths.py. Supports:
-      - top-level `pipeline_run:` block
-      - scalar values: `key: "string"` or `key: bareword`
-      - list values: `key:` followed by `  - "item"` lines
-      - inline empty lists: `key: []`
-      - comments after whitespace + `#`
+    v3.0.1 (audit QA-002): parse with PyYAML — a real YAML parser — so a
+    manifest that is malformed YAML FAILS with a clear parse error instead of
+    being silently re-interpreted by a hand-rolled subset parser (e.g. a broken
+    flow sequence ``[[[broken`` coerced into the scalar string ``"[[[broken"``).
+    PyYAML is already a hard dependency; the stdlib subset parser is retained
+    only as a fallback for the scaffolded-payload case where PyYAML is absent.
 
-    Returns a dict keyed by manifest field. List values are list[str].
-    Scalar values are str.
+    Returns a dict keyed by manifest field. List values are list[str];
+    scalar values are str; empty/None values become [].
     """
     if not manifest_path.exists():
         print(f"check_manifest_schema: FAIL -- manifest not found at {manifest_path}", file=sys.stderr)
         sys.exit(1)
 
     text = manifest_path.read_text(encoding="utf-8")
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return _read_manifest_stdlib(text)
+
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        print(
+            f"check_manifest_schema: FAIL -- manifest is not valid YAML: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        print(
+            "check_manifest_schema: FAIL -- manifest top level must be a mapping "
+            f"(got {type(data).__name__}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    inner = data.get("pipeline_run")
+    block = inner if isinstance(inner, dict) else data
+
+    fields: dict[str, object] = {}
+    for key, value in block.items():
+        if isinstance(value, list):
+            fields[str(key)] = [str(item) for item in value]
+        elif value is None:
+            fields[str(key)] = []
+        elif isinstance(value, bool):
+            fields[str(key)] = str(value).lower()
+        else:
+            fields[str(key)] = str(value)
+    return fields
+
+
+def _read_manifest_stdlib(text: str) -> dict[str, object]:
+    """Stdlib-only subset parser — fallback for when PyYAML is unavailable.
+
+    Supports the constrained manifest subset: top-level ``pipeline_run:`` block,
+    scalar ``key: value``, list ``key:`` + ``- item`` lines, inline ``key: []``,
+    and ``#`` comments after whitespace. Does NOT detect malformed YAML — that
+    is exactly why the PyYAML path above is preferred (QA-002).
+    """
     fields: dict[str, object] = {}
     current_list_key: str | None = None
 
@@ -447,7 +494,7 @@ def _short_repr(value: object, max_len: int = 80) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", action="version", version="agent-pipeline-claude 1.2.1")
+    parser.add_argument("--version", action="version", version="agent-pipeline-claude 3.0.1")
     parser.add_argument(
         "--run",
         help="Pipeline run id (directory under .agent-runs/). Without this, the check is a no-op.",

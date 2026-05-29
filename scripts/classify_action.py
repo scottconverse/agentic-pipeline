@@ -21,8 +21,10 @@ them as high_risk regardless of grant. Unmatched actions fall back to the
 file's `default_class` (reversible_write).
 
 A command that matches more than one class is assigned the most
-restrictive one, so the judge always sees the worst case (e.g.
-`cat x && rm -rf y` classifies as high_risk, not read_only).
+restrictive class *that has a matching rule*, so the judge sees the worst
+case among recognized patterns (e.g. `cat x && rm -rf y` -> high_risk). The
+rule set is a denylist and cannot be exhaustive; the PreToolUse hook's
+DESTRUCTIVE_PATTERNS (hardened in v3.0.1, audit ENG-001) remains the deny floor.
 
 The classification file lives at `<repo>/pipelines/action-classification.yaml`
 relative to this script. Because this module is mirrored byte-for-byte into
