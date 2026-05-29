@@ -136,3 +136,29 @@ def test_load_classification_reads_the_repo_file():
 def test_default_classification_path_points_at_pipelines():
     assert classify_action.DEFAULT_CLASSIFICATION_PATH.name == "action-classification.yaml"
     assert classify_action.DEFAULT_CLASSIFICATION_PATH.parent.name == "pipelines"
+
+
+def test_cli_prints_the_risk_class(capsys):
+    """run.md Step 7a invokes `python scripts/classify_action.py <tool> "<cmd>"`
+    as the helper — so the script must actually be runnable as a CLI and print
+    exactly the class name. (The live e2e surfaced that the CLI was missing.)"""
+    rc = classify_action.main(["bash", "gh release create v0.4"])
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == "high_risk"
+
+
+def test_cli_honors_an_explicit_config_path(tmp_path, capsys):
+    cfg = tmp_path / "action-classification.yaml"
+    cfg.write_text(
+        "classification:\n"
+        "  external_facing:\n"
+        "    - pattern: 'curl'\n"
+        "      tool: bash\n"
+        "default_class: reversible_write\n",
+        encoding="utf-8",
+    )
+    rc = classify_action.main(
+        ["bash", "curl https://example.com", "--config-path", str(cfg)]
+    )
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == "external_facing"

@@ -124,3 +124,32 @@ def classify_action(
                     return "high_risk"
                 return class_name
     return data.get("default_class", "reversible_write")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI: print the risk class for a (tool, command) action.
+
+    Usage: ``python scripts/classify_action.py <tool> "<command>"``. The
+    orchestrator's judged-executor loop (run.md Step 7a) calls this to classify
+    a pending action before routing it to the judge. Prints exactly the class
+    name (one of read_only / reversible_write / external_facing / high_risk).
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Classify an executor (tool, command) action into a risk class."
+    )
+    parser.add_argument("tool", help="Tool name, e.g. bash")
+    parser.add_argument("command", help="The command or arguments string")
+    parser.add_argument(
+        "--config-path",
+        default=None,
+        help="Path to action-classification.yaml (default: the sibling pipelines/ copy).",
+    )
+    args = parser.parse_args(argv)
+    print(classify_action(args.tool, args.command, config_path=args.config_path))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised via main()
+    raise SystemExit(main())
