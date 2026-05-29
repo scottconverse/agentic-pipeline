@@ -221,9 +221,13 @@ the end.
 
 ## 3. Artifact data flow
 
-Each stage reads every prior artifact and writes exactly one new one.
-This is what makes the pipeline resumable — at any point, the run
-directory is the complete state.
+Each stage has every prior artifact available to it and writes exactly
+one new one. Off a 1M-context model the artifacts are injected in full;
+on a 1M-context model the orchestrator injects an artifact index and the
+stage reads what it needs on demand from the run directory (see
+§5, "What an agent stage actually sees"). Either way the run directory is
+the complete state, which is what makes the pipeline resumable — at any
+point it holds every artifact.
 
 ```mermaid
 flowchart LR
@@ -347,8 +351,14 @@ pieces:
 
 1. **Role file** (`.pipelines/roles/<role>.md`) verbatim — the contract
    for what this role does and what it never does.
-2. **Run context** — the manifest plus every prior artifact, joined with
-   `--- <filename> ---` separators.
+2. **Run context** — the manifest, plus the prior artifacts. Off a
+   1M-context model (and always for the `critic`, whose hostile cold read
+   must not be starved) the prior artifacts are concatenated in full,
+   joined with `--- <filename> ---` separators. On a 1M-context model the
+   orchestrator instead injects an artifact index — one line per artifact
+   with its path under `.agent-runs/<run-id>/` — and the subagent reads
+   the ones it needs on demand, keeping the run context resident without
+   pasting every artifact into the prompt.
 3. **Run instructions** — the run id, the working directory, and the
    expected output filename.
 
@@ -357,7 +367,7 @@ flowchart TB
     subgraph Prompt["Prompt sent to fresh subagent"]
         Role["1. Role file content<br/>(verbatim)"]
         Sep1["---"]
-        RC["2. RUN CONTEXT:<br/>--- manifest.yaml ---<br/>(content)<br/>--- research.md ---<br/>(content)<br/>--- plan.md ---<br/>(content)<br/>..."]
+        RC["2. RUN CONTEXT:<br/>--- manifest.yaml ---<br/>(content)<br/>then prior artifacts in full<br/>(off 1M / critic) OR an<br/>artifact index to read<br/>on demand (1M)"]
         Sep2["---"]
         Inst["3. RUN ID: 2026-05-09-my-task<br/>WORKING DIR: .agent-runs/.../<br/>Write your output to<br/>.agent-runs/.../&lt;artifact&gt;<br/>and stop."]
     end
