@@ -197,6 +197,64 @@ def test_run_procedure_uses_chat_gates():
     assert "never substitute `AskUserQuestion`" not in text.lower()
 
 
+# ---------------------------------------------------------------------------
+# v3.0.0 WS-3: resident-context execution — run.md Step 7.4 builds the
+# subagent context block via a window-gated branch. Off 1M it concatenates
+# every prior artifact (current behaviour); on a 1M model it injects an
+# artifact index and has the subagent read on demand. The critic keeps the
+# full block at every window so its hostile cold read is never starved.
+# ---------------------------------------------------------------------------
+
+
+def test_run_context_block_has_lean_path_for_1m():
+    """run.md must offer a lean run-context path that injects an artifact
+    index and reads on demand instead of pasting every prior artifact."""
+    text = _read(REPO_ROOT / "skills" / "run" / "references" / "run.md")
+    assert "Full block" in text and "Lean block" in text, (
+        "run.md Step 7.4 must split the run-context block into a full path "
+        "(default) and a lean path (1M only)."
+    )
+    assert "artifact index" in text, (
+        "the lean path must inject an artifact index rather than every "
+        "prior artifact's full text."
+    )
+    assert "read on demand" in text and "resident" in text, (
+        "the lean path must instruct the subagent to read artifacts on "
+        "demand, keeping the run context resident rather than inline."
+    )
+
+
+def test_run_context_lean_path_gates_on_detect_context_window_model_set():
+    """The 1M gating clause must name the same model set as the hook helper,
+    so run.md and detect_context_window share one source of truth."""
+    text = _read(REPO_ROOT / "skills" / "run" / "references" / "run.md")
+    assert "1M-context model" in text, (
+        "run.md must gate the lean path on being a 1M-context model."
+    )
+    assert "detect_context_window" in text, (
+        "run.md must cross-reference hooks/hook_utils.py:detect_context_window "
+        "as the canonical model->window mapping."
+    )
+    # The literal 1M markers the helper keys on must be named so the prose
+    # can't drift to a different window taxonomy.
+    assert "[1m]" in text.lower(), (
+        "run.md must name the [1m] suffix marker detect_context_window uses."
+    )
+
+
+def test_run_context_critic_keeps_full_block_at_every_window():
+    """The critic's hostile cold read must always get the full block, even
+    at 1M — the lean path is never applied to it."""
+    text = _read(REPO_ROOT / "skills" / "run" / "references" / "run.md")
+    assert "hostile cold read must not be starved" in text, (
+        "run.md must carve the critic out of the lean path with its rationale "
+        "(the hostile cold read must not be starved)."
+    )
+    assert "never for the `critic`" in text, (
+        "the lean path must explicitly exclude the critic stage."
+    )
+
+
 def test_run_skill_does_not_require_grant():
     """SKILL.md must not require a grant file for autonomous flow."""
     text = _read(REPO_ROOT / "skills" / "run" / "SKILL.md")
