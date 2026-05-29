@@ -18,6 +18,15 @@
 #   a PR + merge + tag-move + 4-minute CI cycle. This pipeline forces all
 #   three classes of bug to surface in Phase 0/2 (local, free, fast)
 #   instead of Phase 3 (remote, slow, requires tag-move plumbing).
+#
+# v3.0.0 (WS-1) — optional per-stage execution hints (model / effort /
+# speed): see pipelines/feature.yaml header for the full contract. This
+# pipeline uses the id/needs DAG schema, so the hints attach to each stage
+# dict alongside `id`/`role`/`needs`. The orchestrator applies them only
+# when it spawns a model subagent for an agent-role stage; `role: pipeline`
+# stages ignore them. No model id is hardcoded. A stage with no hints runs
+# exactly as it did before v3.0.0; manifest `risk: high` can raise effort
+# on every model stage at orchestration time (see run.md Step 7).
 
 pipeline:
   id: module-release
@@ -35,6 +44,7 @@ stages:
   - id: preflight-priority
     role: pipeline
     blocking: true
+    speed: fast  # latency-sensitive; advisory for the command stage
     command: python scripts/policy/run_preflight.py --run {run_id}
     description: >
       Verify the manifest's advances_target aligns with the project's
@@ -105,6 +115,7 @@ stages:
     role: verifier
     blocking: true
     needs: [phase3b-umbrella-reconciliation]
+    effort: max  # quality-critical: independent release verification
     description: >
       Independent fresh-context verification:
         - All declared release artifacts exist with expected SHA256s
@@ -120,6 +131,7 @@ stages:
     role: drift-detector
     blocking: true
     needs: [phase4-verify]
+    effort: max  # quality-critical: manifest-vs-result drift
     description: >
       Compare what the manifest promised against what the run actually
       produced. Catches the gap class neither the judge (per-action)
@@ -132,6 +144,7 @@ stages:
     role: critic
     blocking: true
     needs: [phase4b-drift-detect]
+    effort: max  # quality-critical: hostile cold read
     description: >
       Hostile cold read of every artifact in this release run. Reads
       the manifest, plan, implementation report, verifier report,
@@ -159,6 +172,7 @@ stages:
     blocking: true
     needs: [phase4d-auto-promote]
     auto_promote_aware: true
+    effort: max  # quality-critical: final promote/block decision
     description: >
       Final PROMOTE/BLOCK/REPLAN decision citing verifier and critic
       evidence verbatim. Updates PCP "Completed Target" + queue. Writes

@@ -52,6 +52,9 @@ Then spawn a fresh subagent via the `Agent` tool, role file `.pipelines/roles/ma
 - `user_description` — the user's verbatim `$ARGUMENTS` text.
 - `project_root` — the current working directory.
 
+The manifest-drafter is quality-critical: spawn it at `effort: max` (it has no
+pipeline-YAML stage entry, so this hint lives here rather than in the YAML).
+
 The drafter walks the project root for known spec patterns, reads matched files, drafts every derivable manifest field, writes `.agent-runs/<run_id>/manifest.yaml` and `.agent-runs/<run_id>/draft-provenance.md`, and returns a one-line summary string.
 
 ### Step 5 — validate the draft
@@ -87,11 +90,14 @@ Read `.pipelines/<pipeline_type>.yaml`. For each stage in order:
 
 1. **Skip if artifact exists** (resumed run): log `STAGE_SKIPPED: <name> (artifact exists)`.
 2. **If `role: pipeline`**, execute the `command` field via Bash. Capture stdout+stderr to `.agent-runs/<run_id>/<artifact>`. On non-zero exit, surface the failure (see failure-message shape below) and STOP.
+   - Any `model` / `effort` / `speed` hints on a `role: pipeline` stage are ignored — these stages run a deterministic command, not a model subagent. (They are documented in the YAML to record stage character; they take effect only if such a stage is ever converted to a model role.)
    - **Special case `auto-promote`**: exit 0 means ELIGIBLE (manager-decision.md was preset by auto_promote.py); exit 1 means NOT_ELIGIBLE (auto-promote-report.md names which conditions failed). Both advance the pipeline. Only exit 2 (run dir not found) is a real failure.
 3. **If `role: human`** with `gate: human_approval`, this is a mid-run gate. Fire Step 8 (plan gate) or Step 9 (manager gate) per the stage name.
 4. **Otherwise** (an agent role: `researcher`, `planner`, `test-writer`, `executor`, `verifier`, `drift-detector`, `critic`, `manager`), spawn a subagent via `Agent`:
    - **Judged-executor branch:** if the role is `executor` AND `.pipelines/action-classification.yaml` exists in the project, do NOT use the single spawn below. Use the judged-executor handler in **Step 7a** instead — it runs a propose-execute loop that routes the executor's external-facing and high-risk actions through the judge. The other roles, and the executor when no `action-classification.yaml` exists, use the single spawn below unchanged.
    - Read `.pipelines/roles/<role>.md` in full.
+   - **Apply the stage's execution hints (v3.0.0 WS-1).** Read the stage's optional `model`, `effort`, and `speed` keys from the pipeline YAML and pass the present ones to the `Agent` spawn (`model` → the subagent model, `effort` → reasoning effort `high|extra|max`, `speed: fast` → fast mode). Absent keys preserve current behavior — spawn with the orchestrator's defaults. Then apply the risk escalation below.
+   - **Risk-driven effort escalation.** Read `pipeline_run.risk` from the manifest. When `risk: high`, raise every model stage to at least `effort: extra`: a stage with no `effort` hint becomes `extra`, a stage already at `extra` or `max` keeps its higher value, and `high` is bumped to `extra`. `risk: low` and `risk: medium` (and an absent risk field) leave each stage's declared `effort` untouched. This is the natural hook for the manifest `risk` field, which already drives how aggressively the verifier and manager scrutinize.
    - Build the run-context block: manifest content + every prior stage's artifact file content (concatenated with `--- <filename> ---` separators).
    - Spawn description: `<role> stage for run <run-id>`.
    - Prompt: the role file content verbatim + `\n\n---\n\nRUN CONTEXT:\n` + run-context block + `\n\nRUN ID: <run-id>\nWRITE YOUR OUTPUT to .agent-runs/<run-id>/<artifact> and stop.`
