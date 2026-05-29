@@ -44,6 +44,7 @@ class StopValidation:
     continuing_to: str = ""
     stop_condition: str = ""
     current_stage: str = ""
+    active: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,17 +84,19 @@ def active_state_files(run_dir: Path) -> list[Path]:
 
 def validate_state_file(state_path: Path) -> StopValidation:
     fields = parse_control_state(state_path.read_text(encoding="utf-8-sig"))
+    is_active = fields.get("active_run", "").lower() == "true"
     violations = validate_control_state(fields)
     if violations:
         return StopValidation(
             allowed=False,
             reason="control-state validation failed: " + "; ".join(violations),
             state_path=state_path,
+            active=is_active,
         )
 
-    if fields.get("active_run", "").lower() != "true":
+    if not is_active:
         return StopValidation(
-            allowed=True, reason="inactive run", state_path=state_path
+            allowed=True, reason="inactive run", state_path=state_path, active=False
         )
 
     stop_condition = fields.get("stop_condition", "")
@@ -110,6 +113,7 @@ def validate_state_file(state_path: Path) -> StopValidation:
             continuing_to=continuing_to,
             stop_condition=stop_condition,
             current_stage=current_stage,
+            active=True,
         )
 
     run_dir = run_dir_from_state_path(state_path)
@@ -123,6 +127,7 @@ def validate_state_file(state_path: Path) -> StopValidation:
             continuing_to=continuing_to,
             stop_condition=stop_condition,
             current_stage=current_stage,
+            active=True,
         )
 
     return StopValidation(
@@ -133,6 +138,7 @@ def validate_state_file(state_path: Path) -> StopValidation:
         continuing_to=continuing_to,
         stop_condition=stop_condition,
         current_stage=current_stage,
+        active=True,
     )
 
 
@@ -151,15 +157,7 @@ def validate_all_active_stops(
         return [StopValidation(allowed=True, reason="no pipeline control state found")]
 
     results = [validate_state_file(path) for path in states]
-    active = [
-        result
-        for result in results
-        if result.state_path
-        and parse_control_state(result.state_path.read_text(encoding="utf-8-sig"))
-        .get("active_run", "")
-        .lower()
-        == "true"
-    ]
+    active = [result for result in results if result.active]
     if require_active_run and not active:
         return [
             StopValidation(
