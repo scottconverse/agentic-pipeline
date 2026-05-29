@@ -1020,3 +1020,216 @@ def test_session_end_does_not_spawn_when_mem0_not_configured(tmp_path: Path, mon
     assert hook_runner.handle_session_end({"cwd": str(tmp_path), "reason": "user_quit"}) == 0
 
     assert spawned == []
+
+
+# ----- v3.0.0 WS-7 (Gap 2): context-exhaustion early warning -----
+
+
+def _write_transcript(path: Path, used_tokens: int, model: str = "claude-opus-4-8") -> None:
+    """Minimal transcript JSONL with one assistant turn carrying usage.
+
+    read_latest_token_usage sums input + cache_creation + cache_read, so
+    placing the whole count in input_tokens yields ``used_tokens``.
+    """
+    entry = {"message": {"model": model, "usage": {"input_tokens": used_tokens}}}
+    path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+
+def _ups_event(
+    tmp_path: Path,
+    transcript: Path | None,
+    *,
+    prompt: str = "please proceed",
+    session_id: str = "s1",
+) -> dict:
+    event = {"cwd": str(tmp_path), "prompt": prompt, "session_id": session_id}
+    if transcript is not None:
+        event["transcript_path"] = str(transcript)
+    return event
+
+
+def test_context_nudge_below_threshold_is_silent(tmp_path: Path, capsys, monkeypatch) -> None:
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_active_run(tmp_path)
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(transcript, 300_000)  # 30% of a 1M window
+
+    assert hook_runner.handle_user_prompt_submit(_ups_event(tmp_path, transcript)) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_context_nudge_fires_each_threshold_once_with_exact_phrase(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_active_run(tmp_path)
+    transcript = tmp_path / "t.jsonl"
+    event = _ups_event(tmp_path, transcript)
+
+    # 60% crossing -> pro/con framing for remaining-steps triage.
+    _write_transcript(transcript, 610_000)
+    assert hook_runner.handle_user_prompt_submit(event) == 0
+    payload = _json_out(capsys)
+    assert payload["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert "decision" not in payload  # never blocks
+    assert (
+        "pro/con the remaining steps. Finish in this session vs. defer to the next."
+        in payload["hookSpecificOutput"]["additionalContext"]
+    )
+
+    # Same level again -> dedup, exactly once per threshold.
+    assert hook_runner.handle_user_prompt_submit(event) == 0
+    assert capsys.readouterr().out == ""
+
+    # 70% crossing -> highest-value triage.
+    _write_transcript(transcript, 710_000)
+    assert hook_runner.handle_user_prompt_submit(event) == 0
+    payload = _json_out(capsys)
+    assert (
+        "pro/con what is highest-value to finish now; everything else defers to a clean session."
+        in payload["hookSpecificOutput"]["additionalContext"]
+    )
+
+    # 80% crossing -> fresh eyes (next session starts with zero inherited context).
+    _write_transcript(transcript, 810_000)
+    assert hook_runner.handle_user_prompt_submit(event) == 0
+    payload = _json_out(capsys)
+    assert (
+        "checkpoint now and resume the remainder with fresh eyes in a new session."
+        in payload["hookSpecificOutput"]["additionalContext"]
+    )
+
+    # Still at 81% -> 80 already fired, silent.
+    assert hook_runner.handle_user_prompt_submit(event) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_context_nudge_suppression_silences_subsequent(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_active_run(tmp_path)
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(transcript, 810_000)  # 81%, would otherwise fire 80
+
+    # Opt-out prompt: records suppression and confirms once (visible to the
+    # operator, not just the verifier). Never blocks.
+    optout = _ups_event(tmp_path, transcript, prompt="please mute context warnings")
+    assert hook_runner.handle_user_prompt_submit(optout) == 0
+    payload = _json_out(capsys)
+    assert "decision" not in payload
+    assert "muted for this session" in payload["hookSpecificOutput"]["additionalContext"]
+
+    # Not silent: the opt-out is recorded in state.json for the verifier.
+    state = json.loads(
+        (tmp_path / ".agent-runs" / "hook-run" / "state.json").read_text(encoding="utf-8")
+    )
+    assert state["context_nudge"]["s1"]["suppressed"] is True
+
+    # A subsequent high-usage prompt stays silent for the session.
+    assert hook_runner.handle_user_prompt_submit(_ups_event(tmp_path, transcript)) == 0
+    assert capsys.readouterr().out == ""
+
+    # A repeated opt-out phrase does not re-emit the confirmation.
+    assert hook_runner.handle_user_prompt_submit(optout) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_context_nudge_never_blocks_the_prompt(tmp_path: Path, capsys, monkeypatch) -> None:
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_active_run(tmp_path)
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(transcript, 999_000)  # ~100%, most urgent threshold
+
+    assert hook_runner.handle_user_prompt_submit(_ups_event(tmp_path, transcript)) == 0
+    payload = _json_out(capsys)
+    assert "decision" not in payload
+    assert payload["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert "fresh eyes" in payload["hookSpecificOutput"]["additionalContext"]
+
+
+def test_context_nudge_scales_to_detected_window_not_hardcoded_200k(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_active_run(tmp_path)
+    transcript = tmp_path / "t.jsonl"
+    # 200k-window surface: 130k = 65% -> fires the 60% nudge. The same 130k
+    # is only 13% of a 1M window (silent), proving the threshold scales to
+    # the detected window rather than a fixed 200k.
+    _write_transcript(transcript, 130_000, model="claude-sonnet-4-5")
+
+    assert hook_runner.handle_user_prompt_submit(_ups_event(tmp_path, transcript)) == 0
+    payload = _json_out(capsys)
+    assert "pro/con the remaining steps." in payload["hookSpecificOutput"]["additionalContext"]
+
+
+def test_context_nudge_silent_without_reachable_usage(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_active_run(tmp_path)
+
+    # No transcript_path at all.
+    assert hook_runner.handle_user_prompt_submit(_ups_event(tmp_path, None)) == 0
+    assert capsys.readouterr().out == ""
+
+    # transcript_path pointing at a missing file.
+    missing = _ups_event(tmp_path, tmp_path / "nope.jsonl")
+    assert hook_runner.handle_user_prompt_submit(missing) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_context_nudge_composes_with_stale_skill_context(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_active_run(tmp_path)
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(transcript, 610_000)  # 60%
+
+    # Prompt names a bare stale skill -> both signals ride one additionalContext.
+    event = _ups_event(tmp_path, transcript, prompt="Use run now")
+    assert hook_runner.handle_user_prompt_submit(event) == 0
+    context = _json_out(capsys)["hookSpecificOutput"]["additionalContext"]
+    assert "agent-pipeline-claude:run" in context
+    assert "pro/con the remaining steps." in context
+
+
+def test_detect_context_window_maps_model_to_window() -> None:
+    from hooks.hook_utils import (
+        CONTEXT_WINDOW_1M,
+        CONTEXT_WINDOW_200K,
+        detect_context_window,
+    )
+
+    assert detect_context_window("claude-opus-4-8") == CONTEXT_WINDOW_1M
+    assert detect_context_window("claude-opus-4-7") == CONTEXT_WINDOW_1M
+    assert detect_context_window("claude-sonnet-4-6") == CONTEXT_WINDOW_1M
+    assert detect_context_window("claude-opus-4-8[1m]") == CONTEXT_WINDOW_1M
+    # Unrecognized / older surfaces fall back to the conservative 200k.
+    assert detect_context_window("claude-sonnet-4-5") == CONTEXT_WINDOW_200K
+    assert detect_context_window("claude-haiku-4-5") == CONTEXT_WINDOW_200K
+    assert detect_context_window(None) == CONTEXT_WINDOW_200K
+    assert detect_context_window("") == CONTEXT_WINDOW_200K
+
+
+def test_context_nudge_is_per_session_scoped(tmp_path: Path, capsys, monkeypatch) -> None:
+    """A fresh session_id re-evaluates thresholds independently; firing in
+    one session does not silence a different session."""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    _write_active_run(tmp_path)
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(transcript, 610_000)  # 60%
+
+    # Session s1 fires the 60% nudge.
+    assert hook_runner.handle_user_prompt_submit(
+        _ups_event(tmp_path, transcript, session_id="s1")
+    ) == 0
+    assert "pro/con the remaining steps." in _json_out(capsys)["hookSpecificOutput"]["additionalContext"]
+
+    # A different session at the same level fires its own 60% nudge.
+    assert hook_runner.handle_user_prompt_submit(
+        _ups_event(tmp_path, transcript, session_id="s2")
+    ) == 0
+    assert "pro/con the remaining steps." in _json_out(capsys)["hookSpecificOutput"]["additionalContext"]
