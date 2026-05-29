@@ -449,6 +449,21 @@ def test_search_mixed_drops_secret_and_wraps_only_clean(tmp_path) -> None:
     assert all("sk-abcdefghijklmnopqrstuvwxyz012345" not in r.content for r in results)
 
 
+def test_search_drops_body_less_record(tmp_path) -> None:
+    """A record with empty/whitespace-only content is dropped, not wrapped
+    into a preamble with no body."""
+    adapter = MockAdapter(search_results=[
+        MemoryRecord(id="blank", content="   \n  ", score=0.9),
+        MemoryRecord(id="clean", content="prior decision: use JWT", score=0.8),
+    ])
+    policy = PolicyLayer(adapter, _enabled_config(), _fake_identity(tmp_path))
+
+    results = policy.search("How did we handle auth?", scope="prompt")
+
+    assert len(results) == 1
+    assert results[0].id == "clean"
+
+
 def test_search_can_broaden_cross_repo(tmp_path) -> None:
     adapter = MockAdapter(search_results=[])
     policy = PolicyLayer(adapter, _enabled_config(), _fake_identity(tmp_path))

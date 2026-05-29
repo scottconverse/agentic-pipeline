@@ -14,7 +14,10 @@ Enforces (per PRD FR-6, FR-7, FR-9, FR-10, FR-11, FR-13, FR-14):
   prompt-time path; after 5 consecutive p95 violations within a
   session, prompt-time injection is disabled (session-start retrieval
   is preserved).
-- Redaction (FR-11): every write candidate runs through scrub().
+- Redaction (FR-11): every write candidate runs through scrub() in
+  add(), and every inbound search() result is scrubbed too -- secret /
+  blocked-path matches are dropped and survivors are framed as untrusted
+  quoted reference before they are returned (see _inspect_inbound).
 - Circuit breaker (FR-13): 5 consecutive backend failures open the
   breaker for 5 minutes. Writes go to a local outbox; reads return [].
 - Consent gate (FR-14): platform mode requires consent grant before
@@ -274,6 +277,10 @@ class PolicyLayer:
         """
         inspected: list[MemoryRecord] = []
         for record in results:
+            # Drop body-less records: framing "treat the following as
+            # reference" with nothing following only wastes budget.
+            if not record.content.strip():
+                continue
             verdict = scrub(
                 record.content,
                 secret_patterns=self.config.redaction.secret_patterns,
