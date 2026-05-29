@@ -67,6 +67,39 @@ SECRET_PATTERNS = (
     r"\b(cat|type|Get-Content)\b[^\n;|&]*(id_rsa|\.env|credentials|secrets?)\b",
 )
 
+# v3.0.0 WS-7 (Gap 2): context-exhaustion early warning constants. Window
+# size is NOT exposed in the hook payload or transcript (a documented
+# limitation), so we map the model id ourselves; anything unrecognized
+# falls back to the conservative 200k default (warn early rather than
+# never). A surface-level `[1m]` marker on the model id forces 1M.
+CONTEXT_WINDOW_1M = 1_000_000
+CONTEXT_WINDOW_200K = 200_000
+_CONTEXT_WINDOW_1M_PREFIXES = (
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+)
+# Threshold percent -> exact operator-facing phrase. Ordered high to low so
+# a single prompt that vaults past several thresholds fires only the
+# highest crossed-but-unfired one. The literal phrases are load-bearing per
+# the manifest's expected_outputs (60/70 use the `pro/con` trained trigger;
+# 80 uses `fresh eyes`, reserved for the threshold where the next session
+# genuinely starts with zero inherited context) -- do not reword.
+_CONTEXT_NUDGE_PHRASES = (
+    (80, "checkpoint now and resume the remainder with fresh eyes in a new session."),
+    (70, "pro/con what is highest-value to finish now; everything else defers to a clean session."),
+    (60, "pro/con the remaining steps. Finish in this session vs. defer to the next."),
+)
+# Opt-out: the operator silences further nudges for the session by asking
+# to e.g. "mute context warnings". Recorded explicitly in state.json (never
+# a silent suppression) so the verifier can audit the opt-out.
+_CONTEXT_OPTOUT_RE = re.compile(
+    r"\b(mute|silence|snooze|stop|disable|suppress)\b[^.\n]*\bcontext\b"
+    r"[^.\n]*\b(warning|warnings|nudge|nudges|reminder|reminders)\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class ActiveRun:
@@ -118,6 +151,210 @@ def repo_root_from_event(event: dict[str, Any]) -> Path:
         if (candidate / ".agent-runs").exists() or (candidate / ".claude-plugin").exists() or (candidate / ".git").exists():
             return candidate
     return path
+
+
+# ----- v3.0.0 WS-7 (Gap 2): context-exhaustion early warning -----
+#
+# The UserPromptSubmit hook reads the transcript's latest assistant-turn
+# token usage, computes the share of the *detected* context window consumed
+# (1M default on Opus 4.8, 200k on some surfaces -- not a hard-coded 200k),
+# and injects an escalating nudge once per threshold. Token usage IS
+# reachable: every hook payload carries `transcript_path` (a documented
+# common field present on all events including UserPromptSubmit), and each
+# assistant entry in the transcript JSONL carries `message.usage`. The
+# nudge is additionalContext only -- it never blocks the prompt. The
+# delivery channel constraint is the same one the WS-6 probe established
+# (hooks cannot emit role:system; additionalContext is the only
+# model-facing injection channel), so the warning rides additionalContext.
+
+
+def detect_context_window(model: str | None) -> int:
+    """Map a transcript model id to its context window size in tokens.
+
+    Window size is not exposed in the hook payload or transcript, so we map
+    the model id. A `[1m]` suffix (the surface-level 1M-context marker)
+    forces 1M; otherwise a known 1M-capable model prefix maps to 1M and
+    everything else falls back to the conservative 200k default -- warning
+    early on an unrecognized surface beats never warning.
+    """
+    if not model:
+        return CONTEXT_WINDOW_200K
+    normalized = model.strip().lower()
+    if "[1m]" in normalized:
+        return CONTEXT_WINDOW_1M
+    bare = normalized.split("[", 1)[0]
+    for prefix in _CONTEXT_WINDOW_1M_PREFIXES:
+        if bare.startswith(prefix):
+            return CONTEXT_WINDOW_1M
+    return CONTEXT_WINDOW_200K
+
+
+def read_latest_token_usage(
+    transcript_path: str | None,
+) -> tuple[int | None, str | None]:
+    """Return (used_tokens, model) from the most recent assistant turn in
+    the transcript JSONL, or (None, None) when usage is unavailable.
+
+    `used_tokens` sums input_tokens + cache_creation_input_tokens +
+    cache_read_input_tokens -- the full input side of the latest turn, which
+    is the resident context occupancy. output_tokens is excluded: it is the
+    turn's generation, not resident context (it becomes input only on the
+    next turn, which carries its own usage block). Robust to a missing /
+    empty / malformed transcript: any failure yields (None, None) so the
+    caller simply emits no nudge. Streamed line-by-line so a large
+    transcript does not load fully into memory.
+    """
+    if not transcript_path:
+        return (None, None)
+    path = Path(transcript_path)
+    if not path.exists():
+        return (None, None)
+    used: int | None = None
+    model: str | None = None
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                message = obj.get("message")
+                if not isinstance(message, dict):
+                    continue
+                usage = message.get("usage")
+                if isinstance(usage, dict):
+                    total = (
+                        _coerce_int(usage.get("input_tokens"))
+                        + _coerce_int(usage.get("cache_creation_input_tokens"))
+                        + _coerce_int(usage.get("cache_read_input_tokens"))
+                    )
+                    if total > 0:
+                        used = total
+                if message.get("model"):
+                    model = str(message.get("model"))
+    except OSError:
+        return (None, None)
+    return (used, model)
+
+
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _run_state_path(run: ActiveRun) -> Path:
+    return run.run_dir / "state.json"
+
+
+def _load_run_state(run: ActiveRun) -> dict[str, Any]:
+    path = _run_state_path(run)
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _save_run_state(run: ActiveRun, state: dict[str, Any]) -> None:
+    path = _run_state_path(run)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError:  # best-effort; a state-write failure must not block
+        pass
+
+
+def context_window_nudge(
+    event: dict[str, Any], runs: list[ActiveRun], prompt: str
+) -> str | None:
+    """Return an escalating context-exhaustion nudge for the active run, or
+    None when no new threshold is crossed / no usage is available / nudges
+    are suppressed.
+
+    Fires the highest crossed-but-not-yet-fired threshold (60/70/80% of the
+    detected window) exactly once per session, keyed by session_id in the
+    run's state.json. The operator silences further nudges for the session
+    by asking to mute context warnings, which is recorded explicitly in
+    state.json (never a silent suppression). Always returns plain text --
+    the caller surfaces it as additionalContext and never blocks.
+    """
+    if not runs:
+        return None
+    run = runs[0]
+    session_id = str(event.get("session_id") or "default")
+    state = _load_run_state(run)
+    nudge_state = state.get("context_nudge")
+    if not isinstance(nudge_state, dict):
+        nudge_state = {}
+        state["context_nudge"] = nudge_state
+    session_state = nudge_state.get(session_id)
+    if not isinstance(session_state, dict):
+        session_state = {}
+        nudge_state[session_id] = session_state
+
+    # Opt-out: record explicitly and confirm once. Not a silent suppression
+    # -- the operator sees the mute take effect, not just the verifier, so
+    # an accidental regex match is visible and correctable.
+    if _CONTEXT_OPTOUT_RE.search(prompt or ""):
+        if session_state.get("suppressed"):
+            return None
+        session_state["suppressed"] = True
+        _save_run_state(run, state)
+        return (
+            "[Agent Pipeline] Context-exhaustion nudges muted for this "
+            "session. Start a new session to re-enable them."
+        )
+    if session_state.get("suppressed"):
+        return None
+
+    used, model = read_latest_token_usage(event.get("transcript_path"))
+    if not used:
+        return None
+    window = detect_context_window(model)
+    pct = (used / window) * 100.0
+
+    # Record the latest reading for auditability regardless of whether a
+    # nudge fires this turn.
+    session_state["last_tokens"] = used
+    session_state["window"] = window
+
+    raw_fired = session_state.get("fired")
+    fired = set(raw_fired) if isinstance(raw_fired, list) else set()
+
+    selected: tuple[int, str] | None = None
+    for threshold, phrase in _CONTEXT_NUDGE_PHRASES:  # high -> low
+        if pct >= threshold and threshold not in fired:
+            selected = (threshold, phrase)
+            break
+
+    if selected is None:
+        _save_run_state(run, state)  # persist the usage reading only
+        return None
+
+    threshold, phrase = selected
+    # Mark every threshold at or below the one just crossed as fired, so a
+    # single big jump (e.g. straight to 82%) fires only the most urgent
+    # nudge and never back-fills the lower ones on later turns.
+    for lower, _ in _CONTEXT_NUDGE_PHRASES:
+        if lower <= threshold:
+            fired.add(lower)
+    session_state["fired"] = sorted(fired)
+    _save_run_state(run, state)
+    return (
+        f"[Agent Pipeline] Context window ~{threshold}% full "
+        f"(~{used:,} of {window:,} tokens used) -- {phrase} "
+        f"(Reply asking to mute context warnings to silence further "
+        f"nudges this session.)"
+    )
 
 
 def parse_control_state(text: str) -> dict[str, str]:

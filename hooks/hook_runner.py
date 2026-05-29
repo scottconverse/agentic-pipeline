@@ -8,7 +8,8 @@ PostToolUseFailure, PreCompact, PostCompact, SubagentStop, SessionEnd.
 
 The 11 total events bracket the run lifecycle:
 - SessionStart        - inject active run context + memory handoff
-- UserPromptSubmit    - warn on stale skill names, block bypass attempts
+- UserPromptSubmit    - warn on stale skill names, block bypass attempts,
+                        nudge on context-window exhaustion (60/70/80%)
 - PreToolUse          - classify tool risk; deny destructive / out-of-scope
 - PermissionRequest   - auto-deny dangerous; auto-allow when directive-bound
 - PostToolUse         - corrective context after failed tools
@@ -31,6 +32,7 @@ try:
         classify_tool_risk,
         cleanup_stale_plugin_caches,
         consume_judge_approval_on_bash_success,
+        context_window_nudge,
         discover_active_runs,
         marketplace_update_available_context,
         memory_override_context,
@@ -58,6 +60,7 @@ except ModuleNotFoundError:  # pragma: no cover - package import from tests
         classify_tool_risk,
         cleanup_stale_plugin_caches,
         consume_judge_approval_on_bash_success,
+        context_window_nudge,
         discover_active_runs,
         marketplace_update_available_context,
         memory_override_context,
@@ -172,6 +175,12 @@ def handle_user_prompt_submit(event: dict) -> int:
         append_hook_event(root, "UserPromptSubmit", "blocked pipeline bypass prompt")
         record_hook_memory(root, "UserPromptSubmit", bypass, {"blocked": True})
         return write_json({"decision": "block", "reason": bypass})
+    # v3.0.0 WS-7 (Gap 2): context-exhaustion early warning. Additive only --
+    # rides additionalContext alongside any stale-skill context and never
+    # blocks the prompt.
+    nudge = context_window_nudge(event, runs, prompt)
+    if nudge:
+        contexts.append(nudge)
     if not contexts:
         if runs and prompt:
             record_hook_memory(root, "UserPromptSubmit", prompt, {"blocked": False})
