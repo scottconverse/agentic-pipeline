@@ -839,18 +839,22 @@ def test_check_manifest_schema_mirror_matches_top_level_chat_approve_removal():
 # ---------------------------------------------------------------------------
 
 def test_plugin_version_is_redesign_or_later():
-    """Pins the v1.3 redesign surface or its v2.0+ successor. v2.0.0 carries
-    forward the modal-gate invariants from v1.3.x (the heavier-hand redesign
-    adds hooks, Mem0, and directive contracts on top, but does not regress
-    chat-APPROVE or grant-based autonomy). Uses a semver-shape regex so
-    patch releases don't rewrite this test but malformed strings still fail."""
+    """Pins the v1.3 redesign surface or any later major. v2.0.0 carried
+    forward the modal-gate invariants from v1.3.x; v3.0.0 (Opus 4.8 native)
+    adds the judge layer, per-stage model binding, 1M-window context, and the
+    rest of the Opus-4.8 build on top — none of which regress chat-APPROVE or
+    grant-based autonomy. Uses a semver-shape regex so patch releases don't
+    rewrite this test but malformed strings and pre-1.3 regressions still fail.
+    Update deliberately when the major legitimately moves forward."""
     import json
     import re
     plugin = json.loads(_read(REPO_ROOT / ".claude-plugin" / "plugin.json"))
     version = plugin["version"]
-    assert re.fullmatch(r"(?:1\.3|2\.\d+)\.\d+(?:[-+].+)?", version), (
+    # 1.3.x (the redesign baseline) or any major >= 2 (2.x, 3.x, ...).
+    assert re.fullmatch(r"(?:1\.3\.\d+|(?:[2-9]|[1-9]\d+)\.\d+\.\d+)(?:[-+].+)?", version), (
         f"plugin.json version is {version!r}; expected 1.3.<patch> or "
-        "2.<minor>.<patch> (optionally with pre-release/build suffix). "
+        "<major>.<minor>.<patch> with major >= 2 (optionally with "
+        "pre-release/build suffix). "
         "If the redesign is being reverted, update this test deliberately."
     )
 

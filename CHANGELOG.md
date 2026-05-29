@@ -7,6 +7,32 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.0] — 2026-05-29
+
+**v3.0.0 — Opus 4.8 native.** Completes the Opus-4.8-native build. The centerpiece — the reincorporated judge layer — shipped in v2.3.0 (#29); this release lands the remaining nine workstreams. All changes are backward-compatible: every new behavior is either opt-in (gated on a file existing) or additive (absent keys preserve pre-v3 behavior). **617 passing**, forward-compat suite green (codex-pinned symbols byte-untouched), full payload-mirror parity.
+
+### Added
+
+- **Per-stage model/effort/speed binding (WS-1, #31).** Optional `model`/`effort`/`speed` hints on pipeline stages; the orchestrator passes the present ones when spawning a stage subagent, biases quality-critical stages (verify/drift-detect/critique/manager + the manifest-drafter) to `effort: max`, and escalates every model stage to ≥ `effort: extra` under manifest `risk: high`. No model id hardcoded — the migration stays behavioral.
+- **Window-gated lean run-context (WS-3, #34).** On a 1M-context model, inject the manifest plus a read-on-demand artifact index instead of pasting every prior artifact inline; the full block stays the default and is always used for the critic (its hostile cold read must not be starved).
+- **Parallel independent stages (WS-4, #35).** The independent verify/drift-detect/critique trio fans out concurrently; `stop_validator` reads each state file once (n parses/call, not 2n) via a precomputed `StopValidation.active`.
+- **Context-exhaustion early warning (WS-7/Gap-2, #37).** Non-blocking UserPromptSubmit nudge at 60/70/80% of the detected context window, with per-session suppression. Never blocks.
+- **Payload-mirror parity guard.** A parametrized test asserts every pipeline-init payload file is byte-identical to its canonical twin (caught and fixed canonical-only drift introduced by WS-1, WS-2, and P-1′).
+
+### Changed
+
+- **Tolerant format-contract parsing + machine-verdict blocks (WS-2, #32).** STAGE_DONE / DoD-readiness / auto-promote parsing tolerates prose variation; critic/drift-detector/verifier roles emit a machine-readable verdict block alongside the prose count line.
+- **SHA-256 per-run memory integrity (WS-6, #38).** Per-run memory files carry a SHA-256 sidecar written on save and verified on reload, so a tampered/corrupted memory file is detected rather than silently trusted.
+- **Inbound Mem0 scrub + framing (WS-7/Gap-3, #33).** Inbound Mem0 search results are scrubbed and framed on the read path; body-less records are dropped.
+
+### Removed
+
+- **Autonomous-mode vestiges (WS-8, #30).** Deleted the v1.3.0-retired `check_autonomous_mode.py` / `check_autonomous_compliance.py` no-op stubs (+ tests), the retired `gate_policy`/`autonomous_grant` validation block, and resynced the pipeline-init payload byte-for-byte. Resolved the `MEM0_VENDOR_PIN` to mem0 v2.0.4 (75a37ec).
+
+### Security
+
+- **allowed_paths `..`-traversal hardening (P-1′, #36).** `_touches_outside_allowed_paths` now lexically resolves the write target (`os.path.normpath`, TOCTOU-safe, works on a not-yet-existing target) and rejects `..`-escape above the repo root and out-of-repo absolutes, with a best-effort symlink check and Windows case-folding. The prior string-prefix check let `src/../../etc/passwd` through.
+
 ## [2.3.0] — 2026-05-29
 
 **v2.3.0 — judge layer reincorporation.** Brings back the v0.4 judge layer as a platform-executable design: opt-in, real-time, context-isolated supervision of the executor's risky actions. Active only when `.pipelines/action-classification.yaml` exists in your project; with no such file the executor stage runs exactly as before. The original "Handler 3a" wrapped every executor tool call in a classify→judge→execute interceptor — impossible on this platform, where a subagent runs autonomously to completion and cannot spawn the judge mid-flight. This realizes the same load-bearing property (a judge that evaluates risky actions *before* they execute, in isolation from the executor's reasoning) at the orchestrator's altitude, across spawns.
