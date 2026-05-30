@@ -47,8 +47,11 @@ _DEFAULT_SECRET_PATTERNS: tuple[str, ...] = (
     r"\bAKIA[0-9A-Z]{16}\b",
     # JSON Web Token (header.payload.signature)
     r"\beyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}",
-    # Credentials embedded in a URL (scheme://user:pass@host)
-    r"[A-Za-z][A-Za-z0-9+.\-]*://[^:@/\s]+:[^@/\s]+@",
+    # Credentials embedded in a URL (scheme://user:pass@host). Bounded quantifiers
+    # (audit QA-R-001): the prior unbounded `[..]*://[^..]+:[^..]+@` backtracked
+    # quadratically — a 200KB benign string hung scrub() >15s. Bounds keep it
+    # linear and portable (atomic groups would break on operator Python < 3.11).
+    r"[A-Za-z][A-Za-z0-9+.\-]{0,30}://[^:@/\s]{1,128}:[^@/\s]{1,128}@",
     # PEM private key block
     r"-----BEGIN [A-Z ]+PRIVATE KEY-----",
     # Generic bearer-style token

@@ -538,10 +538,27 @@ DECISION_EVENTS = frozenset({"PreToolUse", "PermissionRequest", "Stop"})
 
 
 def _fail_closed_payload(event_name: str, reason: str) -> dict:
-    """Build a deny/block payload in the correct schema for the event."""
+    """Build a deny/block payload in the correct schema for the event.
+
+    Each decision event has a DIFFERENT output contract (audit ENG-R-001 —
+    the prior version used PermissionRequest's shape for PreToolUse, so the
+    runtime ignored the deny and PreToolUse still failed OPEN on a crash):
+      - Stop              -> {"decision": "block", ...}
+      - PreToolUse        -> hookSpecificOutput.permissionDecision = "deny"
+                             (matches every other PreToolUse deny in this codebase)
+      - PermissionRequest -> hookSpecificOutput.decision.behavior = "deny"
+    """
     if event_name == "Stop":
         return {"decision": "block", "reason": reason}
-    # PreToolUse / PermissionRequest
+    if event_name == "PreToolUse":
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+    # PermissionRequest
     return {
         "hookSpecificOutput": {
             "hookEventName": event_name,

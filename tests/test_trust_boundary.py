@@ -72,7 +72,10 @@ def test_pretooluse_handler_crash_fails_closed(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     payload = json.loads(out)
-    assert payload["hookSpecificOutput"]["decision"]["behavior"] == "deny", out
+    # ENG-R-001: PreToolUse uses permissionDecision/permissionDecisionReason —
+    # NOT decision.behavior (that is PermissionRequest's schema). The prior
+    # assertion locked in the wrong shape, so the fail-open bug passed CI.
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny", out
 
 
 def test_permissionrequest_handler_crash_fails_closed(monkeypatch, capsys):
