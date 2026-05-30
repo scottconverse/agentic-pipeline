@@ -63,3 +63,16 @@ def test_no_deprecated_autonomous_skills_in_payload() -> None:
     """DOC-002 / UX-003: the deprecated *-autonomous skills are removed."""
     for gone in ("run-autonomous", "grant-autonomous"):
         assert not (REPO_ROOT / "skills" / gone).exists(), f"{gone} should be removed"
+
+
+def test_docs_advertise_six_live_skills() -> None:
+    """DOC-006 / DOC-R1: the skill count must be six, not three, on the front
+    doors, and every live skill name must appear in README and USER-MANUAL."""
+    skills = ("run", "pipeline-init", "audit-init", "intake", "mem0", "show-run-status")
+    manual = (REPO_ROOT / "USER-MANUAL.md").read_text(encoding="utf-8")
+    assert "Six skills" in manual, "USER-MANUAL must say 'Six skills'"
+    assert "Three skills" not in manual, "USER-MANUAL still says 'Three skills'"
+    for rel in ("README.md", "USER-MANUAL.md"):
+        text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        for s in skills:
+            assert f"agent-pipeline-claude:{s}" in text, f"{rel} missing skill {s}"

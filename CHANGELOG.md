@@ -25,6 +25,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 - **Deprecated `*-autonomous` skills (DOC-002 / UX-003).** `run-autonomous` and `grant-autonomous` — no-ops since v1.3.0 whose descriptions still advertised the modal gate model the product removed (and the hook layer now denies with `MODAL_BUDGET_EXCEEDED`) — are deleted from the payload and from `STALE_STANDALONE_SKILLS`. `/agent-pipeline-claude:run` is the single entry point.
 
+### Fixed (PR #39 independent re-audit)
+
+- **PreToolUse fail-closed schema (ENG-R-001).** The ENG-003 fail-closed hook emitted PermissionRequest's `hookSpecificOutput.decision.behavior` shape for PreToolUse, which the runtime ignores — so the PreToolUse deny floor still failed OPEN on a handler crash, and its test asserted the same wrong shape. It now emits `hookSpecificOutput.permissionDecision="deny"` + `permissionDecisionReason` (matching every other PreToolUse deny in the codebase); the test asserts the correct shape.
+- **Redaction ReDoS (QA-R-001).** The new URL-credential pattern backtracked quadratically — a ~200KB benign input hung `scrub()` >15s. Bounded the quantifiers (linear, and portable — atomic groups would break on operator Python < 3.11); fixed in `redaction.py` and both `mem0-config-template.json` mirrors. `tests/test_redaction_perf.py` pins sub-2s on large inputs while still blocking real credential URLs.
+- **Docs/test residue.** USER-MANUAL skill table corrected to the six live skills; `agent_decision_gate` exit-code coverage added; landing-page + role-prompt sweep residue cleared; the fail-closed test no longer depends on captured stdout.
+
 ## [3.0.0] — 2026-05-29
 
 **v3.0.0 — Opus 4.8 native.** Completes the Opus-4.8-native build. The centerpiece — the reincorporated judge layer (WS-9) — shipped in v2.3.0 (#29); this release lands the remaining seven workstreams (WS-1–WS-4, WS-6, WS-7, WS-8) plus the P-1′ path-traversal hardening. (WS-5 — mid-conversation `role:system` messages replacing `additionalContext` injection — is deferred to a later release.) All changes are backward-compatible: every new behavior is either opt-in (gated on a file existing) or additive (absent keys preserve pre-v3 behavior). **617 passing**, forward-compat suite green (codex-pinned symbols byte-untouched), full payload-mirror parity.

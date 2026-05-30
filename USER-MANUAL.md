@@ -143,7 +143,7 @@ Read-only summary of a run's `.agent-runs/<run-id>/` state. Use when you need to
 v1.1 fixes the install/runtime adapter that v1.0.0–v1.0.2 got wrong. Plugin behavior, manifest schema, role files, and policy scripts are unchanged.
 
 - **Namespaced invocation is now the documented form.** Plugin skills in Claude Code are always invoked as `/<plugin-name>:<skill-name>` per the [official Claude Code plugin docs](https://code.claude.com/docs/en/plugins). The bare `/run` form documented in v1.0 was never reachable for marketplace-installed plugins. Use `/agent-pipeline-claude:run`.
-- **Single layout (`skills/`).** v1.0.1 added a `skills/` mirror alongside `commands/`, causing every skill to register twice and Cowork's resolver to fail on bare names. v1.1 removes `commands/` entirely. Three skills, one layout, no collisions.
+- **Single layout (`skills/`).** v1.0.1 added a `skills/` mirror alongside `commands/`, causing every skill to register twice and Cowork's resolver to fail on bare names. v1.1 removes `commands/` entirely — one layout, no double-registration, no collisions.
 - **Skills are self-contained per Codex's pattern.** Each `skills/<name>/SKILL.md` is a thin shim with frontmatter + tool-mapping notes; the canonical procedure lives in `skills/<name>/references/<name>.md`. Enforced by `scripts/check_skill_packaging.py` ported from `agent-pipeline-codex`.
 - **Marketplace manifest validates.** `marketplace.json` no longer carries an unrecognized root `description`; it lives under `metadata` per the marketplace schema.
 - **Deprecated shims are gone.** `/new-run` and `/run-pipeline` were marked deprecated in v1.0 and scheduled for v1.1 removal. They are now removed (they never functioned as shims in Cowork because v1.0.0–v1.0.2 never loaded; the deprecation theater is over).
@@ -191,13 +191,16 @@ If you don't have those yet, `/agent-pipeline-claude:pipeline-init` helps you sc
 
 ## What you get
 
-Three skills:
+Six skills:
 
 | Invocation | Purpose |
 | :--- | :--- |
-| `/agent-pipeline-claude:pipeline-init` | Onboard a project. Accepts a PRD path, a repo URL, or a description paragraph. Scaffolds `.pipelines/`, `scripts/policy/`, and `CLAUDE.md` if missing. |
 | `/agent-pipeline-claude:run "<short description>"` | Start a pipeline run. Drafts the manifest from your spec, gates on APPROVE, orchestrates end-to-end. Also: `resume <run-id>` and `status`. |
+| `/agent-pipeline-claude:pipeline-init` | Onboard a project. Accepts a PRD path, a repo URL, or a description paragraph. Scaffolds `.pipelines/`, `scripts/policy/`, and `CLAUDE.md` if missing. |
 | `/agent-pipeline-claude:audit-init` | Scaffold dual-AI audit-handoff infrastructure for projects where one AI implements and another audits. |
+| `/agent-pipeline-claude:intake` | Capture a plain-English description and draft starter artifacts (`intake.md`, `manifest.yaml`, `scope-lock.yaml`) without starting the pipeline. |
+| `/agent-pipeline-claude:mem0 <subcommand>` | Manage the Mem0 cross-session memory layer (`init`/`up`/`down`/`whoami`/`test`/`sync`/`prune`). OSS-default; Platform mode behind explicit consent. |
+| `/agent-pipeline-claude:show-run-status` | Read-only summary of a run's `.agent-runs/<run-id>/` state without resuming or mutating it. |
 
 Three default pipeline definitions:
 

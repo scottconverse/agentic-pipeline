@@ -66,7 +66,7 @@ Anything unrecognized re-prints the gate prompt with a no-parse note. Do NOT sca
 
 ### Step 3 — scaffold on APPROVE
 
-When the operator selects APPROVE in the modal:
+When the operator replies APPROVE at the orientation gate:
 
 **Source of truth for the scaffolded files:** the bundled payload at
 `references/pipeline-payload/` inside this skill (resolved relative to the

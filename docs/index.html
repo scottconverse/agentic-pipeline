@@ -260,7 +260,7 @@ manager           →  manager-decision.md     →  [gate 3: chat APPROVE / BLOC
       <tr><td><strong>End-to-end</strong></td><td>Full <code>/run</code> orchestrates research → … → manager against a fixture</td><td>minutes</td><td class="cost">~$2/run Haiku<br>~$15/run Sonnet</td><td>tags + nightly</td></tr>
     </tbody>
   </table>
-  <p>All tests pass on v2.0.0 (see <a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/CHANGELOG.md">CHANGELOG.md</a> for the current count). The cleanroom tier (<a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/tests/test_cleanroom_install.py">tests/test_cleanroom_install.py</a>) is the layer that catches the v1.0.0-class regression — manifest valid in isolation but the install layout broken — that the earlier suite missed.</p>
+  <p>All tests pass on v3.0.1 (see <a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/CHANGELOG.md">CHANGELOG.md</a> for the current count). The cleanroom tier (<a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/tests/test_cleanroom_install.py">tests/test_cleanroom_install.py</a>) is the layer that catches the v1.0.0-class regression — manifest valid in isolation but the install layout broken — that the earlier suite missed.</p>
   <p>Full taxonomy + reproducer: <a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/tests/README.md">tests/README.md</a>.</p>
 </section>
 
@@ -291,6 +291,14 @@ manager           →  manager-decision.md     →  [gate 3: chat APPROVE / BLOC
 </section>
 
 <section>
+  <h2>What's new in v3.0.1</h2>
+  <ul>
+    <li><strong>Audit hardening.</strong> A five-role audit of v3.0.0 (zero blockers) drove fixes across secret-redaction coverage (GitHub/Slack/GitLab/Google/Stripe/npm/JWT/URL/bare-credential), the destructive-command and secret trust boundary (fail-closed PreToolUse hook), real-YAML manifest parsing, and a version-skew sweep guarded by a CI parity test. No behavior change for a healthy run.</li>
+  </ul>
+  <h2>What's new in v3.0.0 (Opus 4.8-native)</h2>
+  <ul>
+    <li><strong>Per-stage model/effort binding</strong>, <strong>window-gated lean run-context</strong> on 1M-context models, <strong>parallel independent verify/drift/critique stages</strong>, <strong>context-exhaustion early warnings</strong>, <strong>SHA-256 per-run memory integrity</strong>, and the <strong>opt-in real-time judge</strong> (reincorporated in v2.3.0). All opt-in or additive — runs that don't set the new keys behave exactly as before.</li>
+  </ul>
   <h2>What changed in v2.2.1</h2>
   <ul>
     <li><strong>Chat-based gates with deterministic keyword grammar.</strong> Reverses the v1.3.0 → v2.1.0 modal-gate experiment after the operator-UX failure (Cowork's modal overlay hid chat context at gate-decision time). Each gate prints a structured prompt naming <code>APPROVE</code> / <code>REVISE</code> / <code>REPLAN</code> / <code>BLOCK</code> / <code>VIEW</code> as recognized keywords. The orchestrator parses the first non-whitespace token of your reply, case-insensitive. Anything unrecognized re-prints the prompt — no LLM interpretation.</li>

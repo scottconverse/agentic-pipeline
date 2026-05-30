@@ -65,42 +65,50 @@ def _boom(_event):
     raise RuntimeError("simulated corrupted run dir")
 
 
-def test_pretooluse_handler_crash_fails_closed(monkeypatch, capsys):
+def _run_main_capturing(monkeypatch, event_name, event):
+    """Run hr.main(), capturing the fail-closed payload via write_json rather
+    than stdout. capsys stdout is unreliable here — the detached
+    mem0_bootstrap.py sync subprocess can pollute the captured stream under
+    load (QA-R-NEW-001). Returns (rc, payload_or_None)."""
+    captured: dict = {}
+
+    def _capture(payload):
+        captured["payload"] = payload
+        return 0
+
+    monkeypatch.setattr(hr, "write_json", _capture)
+    monkeypatch.setattr(hr, "read_hook_input", lambda: event)
+    rc = hr.main([event_name])
+    return rc, captured.get("payload")
+
+
+def test_pretooluse_handler_crash_fails_closed(monkeypatch):
     monkeypatch.setitem(hr.HANDLERS, "PreToolUse", _boom)
-    monkeypatch.setattr(hr, "read_hook_input", lambda: {"tool_input": {"command": "rm -rf /"}})
-    rc = hr.main(["PreToolUse"])
-    out = capsys.readouterr().out
+    rc, payload = _run_main_capturing(monkeypatch, "PreToolUse", {"tool_input": {"command": "rm -rf /"}})
     assert rc == 0
-    payload = json.loads(out)
     # ENG-R-001: PreToolUse uses permissionDecision/permissionDecisionReason —
     # NOT decision.behavior (that is PermissionRequest's schema). The prior
     # assertion locked in the wrong shape, so the fail-open bug passed CI.
-    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny", out
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny", payload
 
 
-def test_permissionrequest_handler_crash_fails_closed(monkeypatch, capsys):
+def test_permissionrequest_handler_crash_fails_closed(monkeypatch):
     monkeypatch.setitem(hr.HANDLERS, "PermissionRequest", _boom)
-    monkeypatch.setattr(hr, "read_hook_input", lambda: {})
-    rc = hr.main(["PermissionRequest"])
-    out = capsys.readouterr().out
+    rc, payload = _run_main_capturing(monkeypatch, "PermissionRequest", {})
     assert rc == 0
-    assert json.loads(out)["hookSpecificOutput"]["decision"]["behavior"] == "deny", out
+    assert payload["hookSpecificOutput"]["decision"]["behavior"] == "deny", payload
 
 
-def test_stop_handler_crash_fails_closed(monkeypatch, capsys):
+def test_stop_handler_crash_fails_closed(monkeypatch):
     monkeypatch.setitem(hr.HANDLERS, "Stop", _boom)
-    monkeypatch.setattr(hr, "read_hook_input", lambda: {})
-    rc = hr.main(["Stop"])
-    out = capsys.readouterr().out
+    rc, payload = _run_main_capturing(monkeypatch, "Stop", {})
     assert rc == 0
-    assert json.loads(out)["decision"] == "block", out
+    assert payload["decision"] == "block", payload
 
 
-def test_observation_handler_crash_does_not_block(monkeypatch, capsys):
-    # Observation-only events must never break the session: log + exit 0, no payload.
+def test_observation_handler_crash_does_not_block(monkeypatch):
+    # Observation-only events must never emit a decision payload (log + exit 0).
     monkeypatch.setitem(hr.HANDLERS, "PostToolUse", _boom)
-    monkeypatch.setattr(hr, "read_hook_input", lambda: {})
-    rc = hr.main(["PostToolUse"])
-    captured = capsys.readouterr()
+    rc, payload = _run_main_capturing(monkeypatch, "PostToolUse", {})
     assert rc == 0
-    assert captured.out.strip() == "", "observation event must not emit a decision payload"
+    assert payload is None, "observation event must not emit a decision payload"
