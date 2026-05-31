@@ -9,7 +9,7 @@
 :root {
   --fg: #181715;
   --fg-muted: #4f4b46;
-  --fg-faint: #8a857c;
+  --fg-faint: #635e54;
   --bg: #f7f4ed;
   --bg-card: #ffffff;
   --accent: #1a3a8f;
@@ -25,7 +25,7 @@
   :root {
     --fg: #ece8df;
     --fg-muted: #b5b0a3;
-    --fg-faint: #88847b;
+    --fg-faint: #a39e93;
     --bg: #161512;
     --bg-card: #1e1d19;
     --accent: #6a8fd8;
@@ -70,7 +70,9 @@ header .tagline {
   font-size: 12px; font-weight: 600;
   padding: 4px 10px; border-radius: 12px;
   border: 1px solid var(--border); color: var(--fg-muted);
+  text-decoration: none; display: inline-block;
 }
+a.badge:hover { border-color: var(--fg-muted); }
 .badge.version { color: var(--accent); border-color: var(--accent); }
 .badge.tests { color: var(--good); border-color: var(--good); }
 .cta-row { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -83,6 +85,14 @@ header .tagline {
 }
 .btn:hover { transform: translateY(-1px); }
 .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.btn.subtle { background: transparent; border-color: transparent; color: var(--fg-muted); padding-left: 8px; padding-right: 8px; }
+.btn.subtle:hover { color: var(--fg); }
+.skip-link {
+  position: absolute; left: -9999px; top: 0;
+  background: var(--accent); color: var(--accent-fg);
+  padding: 8px 14px; border-radius: 0 0 6px 0; z-index: 100;
+}
+.skip-link:focus { left: 0; }
 section { padding: 44px 0; border-bottom: 1px solid var(--border); }
 section:last-of-type { border-bottom: none; }
 h2 { font-size: 26px; margin: 0 0 18px; font-weight: 700; letter-spacing: -0.01em; }
@@ -161,6 +171,7 @@ footer a { color: var(--fg-muted); }
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 <div class="wrap">
 
 <header>
@@ -169,18 +180,20 @@ footer a { color: var(--fg-muted); }
   <p class="tagline">Run research → plan → execute → verify → critique as one command — with three chat-approval gates and runtime guards that stop the work drifting off your spec. No YAML to hand-author.</p>
   <div class="badges">
     <span class="badge version">v3.0.1 · Opus 4.8-native</span>
-    <span class="badge tests">all tests green</span>
-    <span class="badge">cleanroom-verified</span>
+    <a class="badge tests" href="https://github.com/scottconverse/agent-pipeline-claude/actions/workflows/test.yml">tests — see CI</a>
+    <a class="badge" href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/tests/test_cleanroom_smoke.py">cleanroom smoke test</a>
     <span class="badge">Apache-2.0</span>
   </div>
   <div class="cta-row">
     <a class="btn primary" href="https://github.com/scottconverse/agent-pipeline-claude">View on GitHub</a>
     <a class="btn" href="#install">Install</a>
-    <a class="btn" href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/USER-MANUAL.md">User manual</a>
-    <a class="btn" href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/ARCHITECTURE.md">Architecture</a>
-    <a class="btn" href="https://github.com/scottconverse/agent-pipeline-claude/discussions">Discuss</a>
+    <a class="btn subtle" href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/USER-MANUAL.md">User manual</a>
+    <a class="btn subtle" href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/ARCHITECTURE.md">Architecture</a>
+    <a class="btn subtle" href="https://github.com/scottconverse/agent-pipeline-claude/discussions">Discuss</a>
   </div>
 </header>
+
+<main id="main">
 
 <section>
   <h2>The problem</h2>
@@ -327,6 +340,8 @@ manager           →  manager-decision.md     →  [gate 3: chat APPROVE / BLOC
     <li><a href="https://github.com/scottconverse/agent-pipeline-claude/blob/main/tests/README.md">Testing</a> — taxonomy, reproducer, fixtures</li>
   </ul>
 </section>
+
+</main>
 
 <footer>
   <p>By <a href="https://github.com/scottconverse">Scott Converse</a>. Apache-2.0 licensed. v3.0.1 released 2026-05-29 (audit hardening on the Opus 4.8-native v3.0.0 base).</p>

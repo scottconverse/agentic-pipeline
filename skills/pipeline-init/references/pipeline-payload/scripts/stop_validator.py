@@ -211,16 +211,17 @@ def _validate_specific_stop(run_dir: Path, fields: dict[str, str]) -> str:
 
 def _validate_human_gate(run_dir: Path, current_stage: str) -> str:
     if current_stage not in VALID_HUMAN_GATE_STAGES:
+        valid = ", ".join(sorted(VALID_HUMAN_GATE_STAGES))
         return (
-            f"human_approval_gate is only valid at {sorted(VALID_HUMAN_GATE_STAGES)}; "
-            f"current_stage={current_stage!r}"
+            f"A human-approval gate can only be claimed at the {valid} stages, "
+            f"but the current stage is '{current_stage}'."
         )
 
     resume = _resume_stage(run_dir)
     if resume and resume != current_stage:
         return (
-            f"human_approval_gate is stale: run.log resumes at {resume!r}, "
-            f"but control state says {current_stage!r}"
+            f"This human-approval gate looks stale: the run resumes at the "
+            f"'{resume}' stage, but the control state says '{current_stage}'."
         )
     return ""
 
@@ -255,8 +256,8 @@ def _validate_failed_gate(run_dir: Path, current_stage: str) -> str:
         for event in events
     ):
         return (
-            "failed_gate_needs_user_direction is unproven: run.log has no FAILED/BLOCKED "
-            f"event for current_stage={current_stage!r}"
+            "The run hasn't recorded a FAILED or BLOCKED step at the current "
+            f"stage ('{current_stage}'), so it can't stop for user direction yet."
         )
     return ""
 
@@ -267,7 +268,10 @@ def _require_text_signal(
     haystack = " ".join(values).lower()
     if any(needle in haystack for needle in needles):
         return ""
-    return f"{stop_condition} is unproven: next_required_action/continuing_to lack a matching signal"
+    return (
+        f"The '{stop_condition}' stop reason isn't supported yet: the "
+        "next-action / continuing-to fields don't describe a matching step."
+    )
 
 
 def _scope_lock_receipt_passes(run_dir: Path) -> bool:

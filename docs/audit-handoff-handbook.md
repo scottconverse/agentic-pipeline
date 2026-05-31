@@ -1,5 +1,7 @@
 # Audit-Handoff Handbook — agent-pipeline-claude v0.3
 
+> **Current as of v3.0.1.** The `v0.3` tag marks where the audit-handoff discipline originated, not stale content — it still applies as described. See `CHANGELOG.md` for anything that changed since.
+
 This is the operator's reference for the dual-AI audit-handoff discipline. It exists because long autonomous runs by a single AI accumulate drift faster than they accumulate features, and a second AI reading the durable artifacts cold catches what the first AI missed.
 
 ## What this handbook covers

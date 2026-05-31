@@ -1,5 +1,7 @@
 # Module Release Handbook — agent-pipeline-claude v0.2
 
+> **Current as of v3.0.1.** The `v0.2` tag marks where the module-release subsystem originated, not stale content — the pipeline it documents still works as described. See `CHANGELOG.md` for anything that changed since.
+
 This is the operator's reference for running a single-module release sprint end-to-end in one continuous run. It exists because the CivicSuite recovery sweep of 2026-05-10 took ~8 hours on a single module migration when the work itself was ~1 hour of product code — the rest was cascading discovery of pre-existing infrastructure bugs.
 
 ## What this handbook covers
