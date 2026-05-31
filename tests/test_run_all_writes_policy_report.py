@@ -123,9 +123,10 @@ def test_v20_checks_have_prerequisites_mapped() -> None:
 
 
 def test_v20_checks_skip_when_prereq_missing(tmp_path, monkeypatch) -> None:
-    """When the run dir exists but the prerequisite artifact is absent,
-    the v2.0 check is SKIPPED (counted as PASS) and the report shows
-    `[PASS] <check_name>` with `SKIP - <reason>` body. This preserves
+    """When the run dir exists, the prerequisite artifact is absent, and
+    no manifest declares the corresponding gate, the v2.0 check is
+    reported `[SKIP] <check_name>` (its own status, no longer folded into
+    PASS — audit ENG-008) and does not fail the gate. This preserves
     backwards-compat for v1.x runs that don't opt into scope-lock /
     directive / control-loop / etc."""
     fake_runs = tmp_path / ".agent-runs"
@@ -139,8 +140,8 @@ def test_v20_checks_skip_when_prereq_missing(tmp_path, monkeypatch) -> None:
     assert exit_code in (0, 1)
 
     report_text = (fake_runs / run_id / "policy-report.md").read_text(encoding="utf-8")
-    # Every v2.0 check should appear with SKIP reason since their
-    # prerequisite artifacts don't exist in this fixture.
+    # Every v2.0 check should appear with its own SKIP status — never FAIL
+    # (no manifest here declares the gate) and never silently as PASS.
     for v20_check in (
         "check_directive_conformance",
         "check_scope_lock",
@@ -148,16 +149,94 @@ def test_v20_checks_skip_when_prereq_missing(tmp_path, monkeypatch) -> None:
         "check_execute_readiness",
         "check_decision_ledger",
     ):
-        assert v20_check in report_text
-        # The check should not be reported FAIL when prereq is absent
-        check_section_idx = report_text.index(v20_check)
-        # Look for [PASS] or [FAIL] before this position, within the
-        # same section (preceding 30 chars).
-        preceding = report_text[max(0, check_section_idx - 40):check_section_idx]
-        assert "[PASS]" in preceding, (
-            f"v2.0 check {v20_check} should be PASS (via SKIP) when "
-            f"prereq is missing; section preamble was {preceding!r}"
+        assert f"[SKIP] {v20_check}" in report_text, (
+            f"v2.0 check {v20_check} should be reported [SKIP] when its "
+            "prerequisite is absent and no manifest declares the gate"
         )
+        assert f"[FAIL] {v20_check}" not in report_text
+    # ENG-008: skipped gates are surfaced distinctly, not hidden inside the
+    # pass count — the operator can see enforcement depth at a glance.
+    assert "skipped (prerequisite artifact absent" in report_text
+
+
+def test_skip_surfaced_in_summary_when_all_pass(tmp_path, monkeypatch) -> None:
+    """When nothing fails but gates were skipped, the PASS summary line
+    advertises the skip count and keeps the exact `POLICY: ALL CHECKS
+    PASSED` token as a prefix so substring consumers still match (ENG-008)."""
+    import scripts.run_all as run_all
+
+    fake_runs = tmp_path / ".agent-runs"
+    run_id = "all-pass-some-skipped"
+    (fake_runs / run_id).mkdir(parents=True)
+
+    monkeypatch.setattr("scripts.run_all.RUN_DIR_BASE", fake_runs)
+    monkeypatch.setattr("sys.argv", ["run_all.py", "--run", run_id])
+    # Force the non-prerequisite checks to PASS so the only non-PASS
+    # outcomes are the prerequisite-absent SKIPs.
+    monkeypatch.setattr(run_all, "_run", lambda *a, **k: (True, "stub PASS"))
+
+    exit_code = run_all_main()
+    assert exit_code == 0
+
+    report_text = (fake_runs / run_id / "policy-report.md").read_text(encoding="utf-8")
+    assert "POLICY: ALL CHECKS PASSED (" in report_text
+    assert "skipped — prerequisites absent)" in report_text
+    # The bare token a substring consumer (auto_promote) looks for survives.
+    assert "POLICY: ALL CHECKS PASSED" in report_text
+
+
+def test_declared_gate_with_missing_prereq_fails(tmp_path, monkeypatch) -> None:
+    """ENG-008 part 2: a run whose manifest DECLARES a v2.0 gate but is
+    missing the prerequisite artifact must FAIL, not silently SKIP — a
+    claimed gate with no evidence is a broken promise, not a free pass."""
+    fake_runs = tmp_path / ".agent-runs"
+    run_id = "declares-scope-lock-but-absent"
+    run_dir = fake_runs / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.yaml").write_text(
+        "pipeline_run:\n"
+        "  required_gates:\n"
+        "    - policy_passed\n"
+        "    - scope_lock_authority\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("scripts.run_all.RUN_DIR_BASE", fake_runs)
+    monkeypatch.setattr("sys.argv", ["run_all.py", "--run", run_id])
+
+    exit_code = run_all_main()
+    assert exit_code == 1
+
+    report_text = (run_dir / "policy-report.md").read_text(encoding="utf-8")
+    assert "[FAIL] check_scope_lock" in report_text
+    assert "manifest declares gate `scope_lock_authority`" in report_text
+    # SKIP'd-when-declared must not appear for that check.
+    assert "[SKIP] check_scope_lock" not in report_text
+
+
+def test_declared_gates_helper(tmp_path, monkeypatch) -> None:
+    """`_declared_gates` reads the manifest's required_gates, and returns
+    empty (inert) when there's no run, no manifest, or a parse error."""
+    from scripts.run_all import _declared_gates
+
+    fake_runs = tmp_path / ".agent-runs"
+    run_id = "g"
+    run_dir = fake_runs / run_id
+    run_dir.mkdir(parents=True)
+    monkeypatch.setattr("scripts.run_all.RUN_DIR_BASE", fake_runs)
+
+    assert _declared_gates(None) == set()
+    assert _declared_gates(run_id) == set()  # no manifest yet
+
+    (run_dir / "manifest.yaml").write_text(
+        "pipeline_run:\n  required_gates:\n    - policy_passed\n    - directive_bound\n",
+        encoding="utf-8",
+    )
+    gates = _declared_gates(run_id)
+    assert {"policy_passed", "directive_bound"} <= gates
+
+    (run_dir / "manifest.yaml").write_text("pipeline_run: [this: is: : broken", encoding="utf-8")
+    assert _declared_gates(run_id) == set()  # parse error → inert, not a crash
 
 
 def test_pipeline_payload_run_all_matches_top_level() -> None:

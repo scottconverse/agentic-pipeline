@@ -103,6 +103,11 @@ SECRET_PATTERNS = (
 # never). A surface-level `[1m]` marker on the model id forces 1M.
 CONTEXT_WINDOW_1M = 1_000_000
 CONTEXT_WINDOW_200K = 200_000
+# SINGLE SOURCE OF TRUTH for the 1M-context model set (audit ENG-012). Both
+# `detect_context_window` below and the lean/full run-context choice in
+# `skills/run/references/run.md` Step 7 key off this list. run.md no longer
+# re-lists the models — it points here — so the set is maintained in ONE place.
+# Add a new 1M-context model id prefix here and both consumers pick it up.
 _CONTEXT_WINDOW_1M_PREFIXES = (
     "claude-opus-4-6",
     "claude-opus-4-7",
@@ -2630,41 +2635,24 @@ def _extract_write_paths(event_or_command) -> list[str]:
 
 
 def _manifest_list(path: Path, key: str) -> list[str]:
-    """Collect `- ...` list items for a YAML key, terminating cleanly at the
-    next sibling key.
+    """Collect `- ...` list items for a YAML key in the manifest subset.
 
-    Earlier implementation walked until an unindented line, which spilled
-    across sibling keys in indented YAML (e.g. allowed_paths sitting under
-    pipeline_run: would absorb required_gates items). This version tracks
-    the indent of the matched key and terminates as soon as a non-list line
-    appears at or shallower than that indent.
+    Delegates to the single shared stdlib reader
+    `scripts.manifest_yaml.parse_manifest_list` (audit ENG-004) so the
+    PreToolUse hook and the policy-stage `check_allowed_paths` gate can never
+    interpret `allowed_paths` / `forbidden_paths` differently — that would be
+    a silent enforcement gap. Imported via the same repo-root-on-path pattern
+    `stop_continuation` already uses for `scripts.final_response_gate`; a hard
+    import failure here fails the hook closed via `hook_runner.main`'s guard,
+    never open.
     """
-    values: list[str] = []
-    in_key = False
-    key_indent = -1
-    for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        line_indent = len(raw) - len(raw.lstrip(" \t"))
-        if not in_key:
-            if stripped.startswith(f"{key}:"):
-                in_key = True
-                key_indent = line_indent
-            continue
-        # In list-collection mode for `key`
-        if stripped.startswith("- "):
-            # Require strictly deeper indent than the key itself
-            if line_indent > key_indent:
-                values.append(stripped[2:].strip().strip("\"'"))
-            else:
-                # A dash at <= key_indent means we left this key's subtree
-                break
-            continue
-        # Any other content terminates if it is at or shallower than the key indent
-        if line_indent <= key_indent:
-            break
-    return values
+    plugin_root = Path(__file__).resolve().parents[1]
+    root_text = str(plugin_root)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
+    from scripts.manifest_yaml import parse_manifest_list_file
+
+    return parse_manifest_list_file(path, key)
 
 
 def _extract_write_path(command: str) -> str:

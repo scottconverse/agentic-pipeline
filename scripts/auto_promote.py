@@ -37,6 +37,17 @@ Conservative by default: any parse error, missing file, or ambiguous
 count is treated as condition failure. Auto-promote should only fire
 on clean, unambiguous green.
 
+Important limitation (audit ENG-007). The verifier/critic/drift counts are
+self-reported by agent stages, so this script is machine-ASSISTED defense in
+depth, not a soundness proof. Two guards narrow the "clean count line over a
+dirty body" gap: (a) each clean count is cross-checked against the report
+body — the verifier's literal per-criterion `- **NOT MET**:` / `- **PARTIAL**:`
+headers, the critic's `C-N` finding ids and its recommended manager verdict —
+and any contradiction fails the condition to the human gate; (b) auto-promote
+is disabled entirely for high-risk manifests. It still cannot catch a
+dishonest-but-internally-consistent report; the human manager gate remains the
+backstop, and high-risk runs always use it.
+
 The fix from PR #7 (resolve REPO_ROOT for both source and installed
 layouts) is applied here as well.
 """
@@ -205,6 +216,104 @@ def _resolve_counts(
     )
 
 
+# ---------------------------------------------------------------------------
+# v3.0.1 (audit ENG-007) — body cross-checks.
+#
+# The count line and machine-verdict block are author-supplied; arithmetic
+# consistency is not soundness. Before trusting a *clean* count toward
+# auto-promote, cross-check it against the report body, which the role files
+# emit in a known structure. Any contradiction fails the condition closed
+# (the run falls back to the human manager gate).
+# ---------------------------------------------------------------------------
+
+
+def _section_body(text: str, label: str) -> str | None:
+    """Body of the first markdown section whose heading contains `label`
+    (case-insensitive), up to the next heading of the same or higher level.
+    None when no such heading exists."""
+    lines = text.splitlines()
+    start = None
+    start_level = 0
+    for i, line in enumerate(lines):
+        hm = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if hm and label.lower() in hm.group(2).lower():
+            start, start_level = i, len(hm.group(1))
+            break
+    if start is None:
+        return None
+    out: list[str] = []
+    for line in lines[start + 1 :]:
+        hm = re.match(r"^(#{1,6})\s+", line)
+        if hm and len(hm.group(1)) <= start_level:
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
+def _verifier_body_contradiction(text: str) -> str | None:
+    """Reached only when the count line declares 0 NOT MET and 0 PARTIAL.
+    The verifier role emits one literal `- **NOT MET**:` / `- **PARTIAL**:`
+    header per non-clean criterion (verifier.md §1). If any appears, the body
+    contradicts the clean count."""
+    for label in ("NOT MET", "PARTIAL"):
+        if re.search(
+            rf"^\s*-\s*\*\*{re.escape(label)}\*\*\s*:", text, re.MULTILINE | re.IGNORECASE
+        ):
+            return f"body lists a `- **{label}**:` criterion but the count line declares 0 {label}"
+    return None
+
+
+def _critic_body_contradiction(text: str) -> str | None:
+    """Reached only when the count line declares 0 blocker and 0 critical.
+    Two body signals contradict that: (1) the critic's recommended manager
+    verdict is BLOCK or REPLAN; (2) the Blocker/Critical findings sections
+    carry `C-N` finding ids (critic.md §3–4, §10)."""
+    m = re.search(r"Recommended manager verdict\b(.{0,200})", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        vm = re.search(r"\b(PROMOTE|BLOCK|REPLAN)\b", m.group(1), re.IGNORECASE)
+        if vm and vm.group(1).upper() in ("BLOCK", "REPLAN"):
+            return (
+                f"the critic's recommended manager verdict is {vm.group(1).upper()} "
+                "while the count line declares 0 blocker and 0 critical"
+            )
+    for label in ("Blocker findings", "Critical findings"):
+        body = _section_body(text, label)
+        if body and re.search(r"\bC-\d+\b", body):
+            ids = sorted(set(re.findall(r"\bC-\d+\b", body)))
+            return f"the '{label}' section lists finding id(s) {ids} but the count line declares 0 of that severity"
+    return None
+
+
+def _check_risk_gate(run_dir: Path) -> ConditionResult:
+    """High-risk manifests never auto-promote (audit ENG-007).
+
+    Auto-promote rests on agent self-reports; for high-risk work the human
+    manager gate stays the default backstop regardless of how green those
+    self-reports look. Manifest absent / risk != high → eligible (low/medium
+    runs are unaffected). Manifest unreadable → refuse (conservative)."""
+    manifest_path = run_dir / "manifest.yaml"
+    if not manifest_path.exists():
+        return ConditionResult("risk-not-high", True, "no manifest.yaml; risk gate not applicable.")
+    try:
+        import yaml
+
+        data = yaml.safe_load(manifest_path.read_text(encoding="utf-8", errors="replace")) or {}
+    except Exception as exc:  # noqa: BLE001 - any parse failure is conservative-refuse
+        return ConditionResult(
+            "risk-not-high", False, f"manifest.yaml unreadable ({exc}); refusing auto-promote."
+        )
+    root = data.get("pipeline_run") if isinstance(data.get("pipeline_run"), dict) else data
+    risk = str(root.get("risk", "")).strip().lower() if isinstance(root, dict) else ""
+    if risk == "high":
+        return ConditionResult(
+            "risk-not-high",
+            False,
+            "manifest declares `risk: high` — auto-promote is disabled for high-risk runs; "
+            "the human manager gate remains the backstop.",
+        )
+    return ConditionResult("risk-not-high", True, f"manifest risk is `{risk or 'unspecified'}` (not high).")
+
+
 REPO_ROOT = find_repo_root(__file__)
 RUN_DIR_BASE = REPO_ROOT / ".agent-runs"
 
@@ -250,6 +359,13 @@ def _check_verifier(run_dir: Path) -> ConditionResult:
             f"verifier reports {not_met} NOT MET and {partial} PARTIAL criterion(a) ({source}). "
             "Auto-promote requires zero of each.",
         )
+    contradiction = _verifier_body_contradiction(text)
+    if contradiction:
+        return ConditionResult(
+            "verifier-clean",
+            False,
+            f"verifier-report.md count line is clean but {contradiction} (audit ENG-007 cross-check).",
+        )
     return ConditionResult(
         "verifier-clean",
         True,
@@ -286,6 +402,13 @@ def _check_critic(run_dir: Path) -> ConditionResult:
             False,
             f"critic reports {blocker} blocker and {critical} critical finding(s) ({source}). "
             "Auto-promote requires zero of each.",
+        )
+    contradiction = _critic_body_contradiction(text)
+    if contradiction:
+        return ConditionResult(
+            "critic-clean",
+            False,
+            f"critic-report.md count line is clean but {contradiction} (audit ENG-007 cross-check).",
         )
     return ConditionResult(
         "critic-clean",
@@ -700,6 +823,7 @@ def main() -> int:
         return 2
 
     conditions = [
+        _check_risk_gate(run_dir),
         _check_verifier(run_dir),
         _check_critic(run_dir),
         _check_drift(run_dir),

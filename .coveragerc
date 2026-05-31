@@ -1,0 +1,19 @@
+# Coverage configuration (audit TEST-003).
+# `parallel = true` + COVERAGE_PROCESS_START (set in CI) lets the scripts that
+# run_all.py / run_preflight.py spawn as subprocesses record their own data,
+# which pytest-cov then combines with the in-process run.
+[run]
+source =
+    scripts
+    hooks
+parallel = true
+omit =
+    */__pycache__/*
+    */tests/*
+
+[report]
+show_missing = True
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise SystemExit

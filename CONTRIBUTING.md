@@ -20,7 +20,8 @@ To work on the plugin locally:
 ```bash
 git clone https://github.com/scottconverse/agent-pipeline-claude.git
 cd agent-pipeline-claude
-git checkout v1   # or another working branch
+# `main` is the current release line; branch from it for your change.
+git checkout -b my-change main
 ```
 
 If you want to point your installed plugin at the local clone instead of the marketplace version:
@@ -63,7 +64,7 @@ Open an issue with:
 - The expected outcome.
 - The actual outcome (full chat-message transcript, with any error verbatim).
 - Your Cowork or Claude Code CLI version.
-- The plugin version (`python scripts/check_manifest_schema.py --version` after a `/pipeline-init`).
+- The plugin version — the `version` field in `.claude-plugin/plugin.json`, or run `claude plugin list`.
 - The relevant `.agent-runs/<run-id>/run.log` if the bug surfaced during a run.
 
 ### Feature requests

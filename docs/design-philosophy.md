@@ -1,5 +1,7 @@
 # Schematic Restraint — design philosophy for the landing page
 
+> Scope: this governs the visual language of the project's **landing page** (`docs/index.html`) only — not the product's UX or architecture. For product design rationale see `ARCHITECTURE.md`.
+
 A philosophy of technical drawing as visual ethics. The composition adopts the
 grammar of process & instrumentation diagrams, of Otl Aicher's pictograms for
 Munich '72, of the great editorial pages of *Domus* and *Casabella* — work

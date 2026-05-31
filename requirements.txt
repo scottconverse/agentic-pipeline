@@ -11,6 +11,12 @@ pyyaml>=6.0,<7
 # Test-only — pinned here so CI installs a reproducible toolchain (ENG-009).
 pytest>=8.0,<9
 
+# Coverage gate (audit TEST-003). pytest-cov ships the .pth that calls
+# coverage.process_startup() in each child, so setting COVERAGE_PROCESS_START
+# in CI also instruments the scripts run_all/run_preflight spawn as subprocesses.
+pytest-cov>=5.0,<8
+coverage>=7.4,<8
+
 # Optional — the Mem0 cross-session memory layer (Layer B). File-backed Layer A
 # works without it; the OSS path clones mem0 at the SHA pinned in
 # vendor/VENDOR_PINS.md. Enable with:  pip install mem0ai

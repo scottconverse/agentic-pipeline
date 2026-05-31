@@ -20,5 +20,16 @@ jobs:
       - name: Install dependencies (pinned)
         run: pip install -r requirements.txt
 
-      - name: Run tests
-        run: python -m pytest tests/ -q --tb=short
+      - name: Run tests (with coverage gate)
+        # COVERAGE_PROCESS_START + pytest-cov's bundled .pth instrument the
+        # scripts run_all/run_preflight spawn as subprocesses; --cov-fail-under
+        # holds the floor so the gate-coverage gap can't silently widen
+        # (audit TEST-003). Floor is 70, a tight trailing margin under the
+        # measured 72.8% baseline — close enough to catch erosion, with small
+        # headroom for noise. Ratchet up as coverage rises.
+        env:
+          COVERAGE_PROCESS_START: ${{ github.workspace }}/.coveragerc
+        run: >-
+          python -m pytest tests/ -q --tb=short
+          --cov=scripts --cov=hooks
+          --cov-report=term-missing --cov-fail-under=70

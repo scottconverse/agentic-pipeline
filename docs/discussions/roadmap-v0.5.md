@@ -1,5 +1,7 @@
 # Roadmap — v0.5 candidate set
 
+> **Historical discussion seed (v0.5).** Several candidates here have since shipped or changed: the "Project memory layer" landed as file-backed + Mem0 memory in v2.0, and autonomous-mode vestiges were removed in v3.0.0 (WS-8). Read this as a point-in-time snapshot, not the current roadmap — see `CHANGELOG.md`.
+
 This is a living document. The v0.5 candidate set crystallizes as ideas from the [Ideas](ideas-seed.md) thread accumulate evidence — projects that needed it, receipts of where the gap bit, sketches that converge on a concrete design.
 
 The candidate set is **not a commitment.** v0.5 will ship some subset of this; the rest will roll to v0.6 or get dropped if they don't accumulate enough receipts.

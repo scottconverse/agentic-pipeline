@@ -88,10 +88,61 @@ CHECK_PREREQUISITES: dict[str, str] = {
     "check_decision_ledger": "decision-ledger.ndjson",
 }
 
+# Maps a v2.0/v3.0 gate name (as written in the manifest's `required_gates`)
+# to the policy checks that enforce it. When a run's manifest *declares* one
+# of these gates, the matching check's prerequisite artifact is mandatory: a
+# missing prerequisite is a FAIL, not a silent SKIP (audit ENG-008 — a run
+# that claims a gate level must not pass policy with that gate un-run).
+# Gates whose checks have a prerequisite but no documented `required_gates`
+# name (control-loop, decision-ledger) intentionally stay skip-when-absent.
+GATE_ENFORCING_CHECKS: dict[str, set[str]] = {
+    "directive_bound": {"check_directive_conformance"},
+    "scope_lock_authority": {
+        "check_scope_lock",
+        "check_rung_file_ownership",
+        "check_release_docs_consistency",
+    },
+    "execute_readiness": {"check_execute_readiness"},
+}
+
+
+def _declared_gates(run_id: str | None) -> set[str]:
+    """Return the gate names the run's manifest declares in `required_gates`.
+
+    Empty when there is no run, no manifest, or the manifest can't be parsed
+    — in those cases the gate-level FAIL path below is inert and the prior
+    skip-when-absent behavior holds. (A malformed manifest is independently
+    caught and failed by `check_manifest_schema`, so swallowing the parse
+    error here does not let a broken manifest through the overall gate.)
+    """
+    if not run_id:
+        return set()
+    manifest_path = RUN_DIR_BASE / run_id / "manifest.yaml"
+    if not manifest_path.exists():
+        return set()
+    try:
+        import yaml
+
+        data = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return set()
+    root = data.get("pipeline_run") if isinstance(data.get("pipeline_run"), dict) else data
+    if not isinstance(root, dict):
+        return set()
+    gates = root.get("required_gates") or []
+    if not isinstance(gates, list):
+        return set()
+    return {str(g).strip() for g in gates if isinstance(g, str)}
+
 
 def _run(check_name: str, script_args: list[str], extra_args: list[str]) -> tuple[bool, str]:
     cmd = [sys.executable, str(THIS_DIR / script_args[0]), *script_args[1:], *extra_args]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # Decode child output as UTF-8 (audit QA-006): the checks print decorative
+    # Unicode, and a locale-default (cp1252) decode mangles it in the combined
+    # report. errors="replace" keeps a noisy byte from ever crashing the gate.
+    proc = subprocess.run(
+        cmd, capture_output=True, encoding="utf-8", errors="replace", check=False
+    )
     output = (proc.stdout or "") + (proc.stderr or "")
     return proc.returncode == 0, output.rstrip()
 
@@ -145,24 +196,46 @@ def main() -> int:
         "check_decision_ledger",
     }
 
-    results: list[tuple[str, bool, str]] = []
+    # A check is *mandated* when the manifest declares the gate it enforces.
+    # For mandated checks a missing prerequisite is a FAIL, not a SKIP.
+    declared = _declared_gates(args.run)
+    mandated_checks: set[str] = set()
+    mandating_gate: dict[str, str] = {}
+    for gate, checks in GATE_ENFORCING_CHECKS.items():
+        if gate in declared:
+            for check in checks:
+                mandated_checks.add(check)
+                mandating_gate[check] = gate
+
+    # status is one of "PASS" / "FAIL" / "SKIP". SKIP never affects the exit
+    # code (back-compat for v1.x runs that don't opt into a gate) but is
+    # surfaced distinctly so the operator sees the real enforcement depth.
+    results: list[tuple[str, str, str]] = []
     for name, script_args in CHECKS:
         present, skip_reason = _prerequisite_present(name, args.run)
         if not present:
-            results.append((name, True, f"SKIP - {skip_reason}"))
+            if name in mandated_checks:
+                gate = mandating_gate[name]
+                results.append((
+                    name,
+                    "FAIL",
+                    f"manifest declares gate `{gate}` but its prerequisite is absent: {skip_reason}",
+                ))
+            else:
+                results.append((name, "SKIP", skip_reason))
             continue
         extra = extra_for_run_consumers if name in run_consumers else []
         passed, output = _run(name, script_args, extra)
-        results.append((name, passed, output))
+        results.append((name, "PASS" if passed else "FAIL", output))
 
-    failed = [name for name, passed, _ in results if not passed]
+    failed = [name for name, status, _ in results if status == "FAIL"]
+    skipped = [name for name, status, _ in results if status == "SKIP"]
 
     report_lines: list[str] = []
     report_lines.append("=" * 64)
     report_lines.append("Policy checks")
     report_lines.append("=" * 64)
-    for name, passed, output in results:
-        status = "PASS" if passed else "FAIL"
+    for name, status, output in results:
         report_lines.append(f"\n[{status}] {name}")
         if output:
             for line in output.splitlines():
@@ -174,7 +247,15 @@ def main() -> int:
         for name in failed:
             report_lines.append(f"  - {name}")
     else:
-        report_lines.append("POLICY: ALL CHECKS PASSED")
+        # Keep the exact "POLICY: ALL CHECKS PASSED" token as a prefix so
+        # substring consumers (auto_promote condition 4) still match, while
+        # making skipped (un-run) gates visible at a glance — ENG-008.
+        suffix = f" ({len(skipped)} skipped — prerequisites absent)" if skipped else ""
+        report_lines.append(f"POLICY: ALL CHECKS PASSED{suffix}")
+    if skipped:
+        report_lines.append("  skipped (prerequisite artifact absent; gate not declared in manifest):")
+        for name in skipped:
+            report_lines.append(f"    - {name}")
 
     report_text = "\n".join(report_lines) + "\n"
     print(report_text, end="")

@@ -1,5 +1,7 @@
 # agent-pipeline-claude v0.4 — the judge layer
 
+> **Historical discussion seed (v0.4).** This announced the judge layer when it was new. Some references are now stale: `commands/` was removed (the original "Handler 3a" interceptor proved impossible on this platform and was re-realized differently — see `CHANGELOG.md` v2.3.0), and the manual section is now titled "The judge layer" (no "(v0.4)"). For the current design see `ARCHITECTURE.md` and `USER-MANUAL.md`.
+
 **TL;DR:** Real-time action-level supervision inside the executor stage. Opt-in via `.pipelines/action-classification.yaml`. The orchestrator classifies every executor tool call by risk class and spawns a context-isolated judge subagent for the dangerous ones. Four verdicts: `allow`, `block`, `revise`, `escalate`.
 
 ## What this catches

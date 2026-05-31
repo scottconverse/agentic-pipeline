@@ -26,8 +26,10 @@ except ImportError:
 
 try:
     from policy_utils import find_repo_root
+    from manifest_yaml import parse_manifest_list
 except ModuleNotFoundError:  # pragma: no cover - installed layout
     from scripts.policy_utils import find_repo_root
+    from scripts.manifest_yaml import parse_manifest_list
 
 
 REPO_ROOT = find_repo_root(__file__)
@@ -55,55 +57,20 @@ def _git_changed_files() -> list[str]:
 def _load_manifest_lists(manifest_path: Path) -> tuple[list[str], list[str]]:
     """Return (allowed_paths, forbidden_paths) parsed from manifest YAML.
 
-    Stdlib-only: no PyYAML. The manifest format is a tightly-constrained
-    subset (top-level `pipeline_run:` block, list values are simple
-    strings under `- ` lines). A real YAML parse is not required for the
-    fields this checker reads.
+    Delegates to the single shared stdlib reader `manifest_yaml.parse_manifest_list`
+    (audit ENG-004) so this policy gate and the PreToolUse hook cannot
+    interpret the same path lists differently — a divergence there would be a
+    silent enforcement gap. `tests/test_manifest_yaml.py` pins the equivalence.
     """
     if not manifest_path.exists():
         print(f"FAIL: manifest not found at {manifest_path}", file=sys.stderr)
         sys.exit(1)
 
     text = manifest_path.read_text(encoding="utf-8")
-    allowed: list[str] = []
-    forbidden: list[str] = []
-    current_key: str | None = None
-
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        # Strip comments after a `#` that is preceded by whitespace.
-        if "#" in line:
-            hash_idx = line.find("#")
-            if hash_idx == 0 or line[hash_idx - 1].isspace():
-                line = line[:hash_idx].rstrip()
-        if not line:
-            continue
-        stripped = line.strip()
-        # Track which list we're inside.
-        if stripped.startswith("allowed_paths:"):
-            current_key = "allowed"
-            if "[]" in stripped:
-                current_key = None
-            continue
-        if stripped.startswith("forbidden_paths:"):
-            current_key = "forbidden"
-            if "[]" in stripped:
-                current_key = None
-            continue
-        # Detect any other top-level key — leaves the current list.
-        if not raw.startswith((" ", "\t")) and stripped.endswith(":"):
-            current_key = None
-            continue
-        if stripped.startswith("- ") and current_key is not None:
-            value = stripped[2:].strip().strip("\"'")
-            if current_key == "allowed":
-                allowed.append(value)
-            elif current_key == "forbidden":
-                forbidden.append(value)
-        elif current_key is not None and not stripped.startswith("- "):
-            current_key = None
-
-    return allowed, forbidden
+    return (
+        parse_manifest_list(text, "allowed_paths"),
+        parse_manifest_list(text, "forbidden_paths"),
+    )
 
 
 def _is_under(path: str, prefixes: list[str]) -> bool:
