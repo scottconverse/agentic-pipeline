@@ -10,7 +10,9 @@
 # so forks and key-less environments are unaffected.
 name: cleanroom-e2e
 
-on:
+# Quoted so static YAML tooling (yaml.safe_load) keeps this as the string key
+# "on" rather than coercing it to the boolean True (audit-tail UX/QA nit).
+"on":
   schedule:
     - cron: "0 14 * * 1"   # Mondays 14:00 UTC
   push:
