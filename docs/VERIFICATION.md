@@ -2,7 +2,7 @@
 
 End-to-end test receipts for [agent-pipeline-claude](https://github.com/scottconverse/agent-pipeline-claude). This file's narrative was captured at v1.1.1; the harness has expanded substantially through v1.3.x and v2.0 (hook layer, memory layer, directive contracts). The receipts below document the v1.1.1 baseline; the current suite is 700+ automated tests (run `pytest -q`; the per-release count is in CHANGELOG.md), so the "16 tests" figure below is historical, not current. Ran on Windows 11 Pro, MSYS Git Bash, Claude Code CLI 2.1.87 / Claude Desktop 2.1.128.
 
-> **What PR-CI green does and does not cover.** The per-PR `test` workflow runs the full unit/integration suite behind a coverage gate — this is what a green check on a PR means. It does **not** run the live-assembled `cleanroom-e2e` (a real skill driven end-to-end via `claude -p --plugin-dir` against the API), which costs money and needs `ANTHROPIC_API_KEY`. That live rung runs on a weekly schedule, on `v*` release tags, and on manual dispatch (`.github/workflows/cleanroom-e2e.yml`); it self-skips when the key is absent. So the from-scratch live altitude is exercised periodically, not on every PR — read a green PR check as "unit/integration verified," and the scheduled/tag `cleanroom-e2e` run as the live-assembled receipt.
+> **What PR-CI green does and does not cover.** The per-PR `test` workflow runs the full unit/integration suite behind a coverage gate — this is what a green check on a PR means. It does **not** run the live-assembled `cleanroom-e2e` (a real skill driven end-to-end via `claude -p --plugin-dir`), which costs ~$0.05/run. That live rung runs on a weekly schedule, on `v*` release tags, and on manual dispatch (`.github/workflows/cleanroom-e2e.yml`); it uses whatever auth the runner's `claude` CLI already has and self-skips when `claude` is not on PATH. So the from-scratch live altitude is exercised periodically, not on every PR — read a green PR check as "unit/integration verified," and the scheduled/tag `cleanroom-e2e` run as the live-assembled receipt.
 
 This file documents:
 1. The automated test suite (16 tests, ~$0.05 in Haiku for the opt-in cleanroom-smoke).
@@ -46,7 +46,7 @@ Breakdown:
 ## Cleanroom-smoke — 1 test, opt-in, ~$0.05 in Haiku, ~48s wall
 
 ```
-$ ANTHROPIC_API_KEY=sk-ant-... pytest tests/test_cleanroom_smoke.py -v -m cleanroom_e2e
+$ pytest tests/test_cleanroom_smoke.py -v -m cleanroom_e2e
 tests/test_cleanroom_smoke.py::test_cleanroom_pipeline_init_scaffolds_into_real_project PASSED [100%]
 1 passed in 48.48s
 ```
@@ -75,7 +75,7 @@ cp -r tests/fixtures/civiccast-shaped/* /tmp/sonnet-e2e/
 cd /tmp/sonnet-e2e
 SID=$(python -c "import uuid; print(uuid.uuid4())")
 
-export ANTHROPIC_API_KEY=sk-ant-...
+# Uses the claude CLI's existing auth (subscription login or API key).
 
 # 4 turns, all Sonnet
 claude -p --session-id "$SID" --model sonnet \
@@ -214,8 +214,8 @@ For routine runs Haiku is fine and cheap; for runs where you want eligibility ch
 ## Reproducing this verification
 
 ```bash
-# Prereqs: claude CLI, ANTHROPIC_API_KEY, ~$15 of API budget for Sonnet
-# (or ~$2 for Haiku — but Sonnet is what we documented above)
+# Prereqs: an authenticated claude CLI (subscription login or API key),
+# ~$15 of model budget for Sonnet (or ~$2 for Haiku — but Sonnet is what we documented above)
 
 git clone https://github.com/scottconverse/agent-pipeline-claude.git
 cd agent-pipeline-claude
@@ -225,7 +225,7 @@ python -m pytest tests/ -q --ignore=tests/test_cleanroom_smoke.py
 # Expected: 15 passed
 
 # 2. Cleanroom-smoke (opt-in, ~$0.05)
-ANTHROPIC_API_KEY=sk-ant-... pytest tests/test_cleanroom_smoke.py -m cleanroom_e2e
+pytest tests/test_cleanroom_smoke.py -m cleanroom_e2e
 # Expected: 1 passed in ~50s
 
 # 3. Full E2E against the fixture (manual, ~$15 Sonnet)
@@ -233,7 +233,7 @@ mkdir /tmp/e2e-fixture
 cp -r tests/fixtures/civiccast-shaped/* /tmp/e2e-fixture/
 cd /tmp/e2e-fixture
 SID=$(python -c "import uuid; print(uuid.uuid4())")
-export ANTHROPIC_API_KEY=sk-ant-...
+# Uses the claude CLI's existing auth (subscription login or API key).
 
 claude -p --session-id "$SID" --model sonnet \
   'Use the Skill tool to invoke "agent-pipeline-claude:pipeline-init".'

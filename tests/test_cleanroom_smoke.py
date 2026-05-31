@@ -20,7 +20,9 @@ Procedure:
    real project (not just registered in the slash palette).
 
 Cost: ~$0.05 in Haiku, ~30–60 seconds wall.
-Requires: claude CLI on PATH + ANTHROPIC_API_KEY in env. Skips otherwise.
+Requires: an authenticated `claude` CLI on PATH (it uses whatever auth the CLI
+already has — a subscription login or an API key; this test does not care
+which). Skips only when `claude` is not on PATH.
 
 This is a SMOKE test, not full E2E. It does NOT run `/run` (the full pipeline
 costs ~$2–15 and takes 5–30 minutes — that's tag/nightly territory). Smoke
@@ -31,7 +33,6 @@ proves the orchestration.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import textwrap
@@ -196,8 +197,6 @@ def test_cleanroom_pipeline_init_scaffolds_into_real_project(tmp_path: Path) -> 
     """
     if shutil.which("claude") is None:
         pytest.skip("claude CLI not on PATH")
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.skip("ANTHROPIC_API_KEY not set (smoke test needs real model)")
 
     plugin_dir = tmp_path / "plugin"
     project_dir = tmp_path / "project"
@@ -206,6 +205,13 @@ def test_cleanroom_pipeline_init_scaffolds_into_real_project(tmp_path: Path) -> 
 
     sid = str(uuid.uuid4())
     turn1, turn2 = _drive_pipeline_init(plugin_dir, project_dir, sid)
+
+    # The test uses the CLI's existing auth (subscription login or API key). If
+    # the CLI is on PATH but not signed in, skip rather than fail — an
+    # unauthenticated environment can't reach a model, which is an environment
+    # gap, not a regression in the plugin under test.
+    if turn1.returncode != 0 and "Please run /login" in (turn1.stdout + turn1.stderr):
+        pytest.skip("claude CLI is not logged in (run `claude /login`); live smoke needs an authenticated CLI")
 
     # Both turns must exit clean.
     assert turn1.returncode == 0, (

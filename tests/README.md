@@ -62,18 +62,18 @@ See [`docs/LOCAL_TEST_RESEARCH.md`](../docs/LOCAL_TEST_RESEARCH.md) for why this
   - Runs `claude --plugin-dir <tmp_path/plugin> -p` from the fixture, two turns: invoke `agent-pipeline-claude:pipeline-init`, then `APPROVE`.
   - Asserts the fixture now contains `.pipelines/` with 9 expected role files + 5 pipeline yamls + 5 policy scripts.
 
-This is the layer that catches "plugin loads but skills no-op" and "skills scaffold to the wrong path" — failures the load-only tests cannot see. Cost: ~$0.05 in Haiku, ~60s wall. Requires `ANTHROPIC_API_KEY` in env and `claude` on PATH; skips otherwise.
+This is the layer that catches "plugin loads but skills no-op" and "skills scaffold to the wrong path" — failures the load-only tests cannot see. Cost: ~$0.05 in Haiku, ~60s wall. Requires an authenticated `claude` CLI on PATH (it uses whatever auth the CLI already has — a subscription login or an API key); skips only when `claude` is absent.
 
 Run with:
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... pytest tests/test_cleanroom_smoke.py -m cleanroom_e2e
+pytest tests/test_cleanroom_smoke.py -m cleanroom_e2e
 ```
 
-Or run the whole suite (this test skips without an API key):
+Or run the whole suite (this test skips when `claude` is not on PATH):
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... pytest tests/
+pytest tests/
 ```
 
 ### End-to-end
@@ -88,7 +88,7 @@ E2E exercises `/run` against a real Claude Code session with a real model. The p
 E2E procedure (manual or CI-on-tag):
 
 ```bash
-# Prereqs: claude CLI on PATH, ANTHROPIC_API_KEY set,
+# Prereqs: an authenticated claude CLI on PATH (subscription login or API key),
 # plugin enabled (`claude plugin list` reports ✔ enabled)
 
 cd tests/fixtures/civiccast-shaped/
@@ -156,5 +156,5 @@ For a new fixture:
 
 For a new test tier (e.g., automated E2E):
 1. Add a `tests/test_<tier>_*.py` module.
-2. If it requires external resources (`claude` CLI, API key), gracefully skip via `pytest.skip` when unavailable.
+2. If it requires external resources (e.g. an authenticated `claude` CLI), gracefully skip via `pytest.skip` when unavailable.
 3. Document the tier in the table at the top of this README.
