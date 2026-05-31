@@ -2,7 +2,7 @@
 
 Ship multi-step Claude Code work that doesn't drift. The plugin reads your project's spec, drafts a per-run scope contract, and shows it to you in chat with a deterministic keyword gate (`APPROVE` / `REVISE` / `VIEW`). Then it runs research → plan → execute → verify → critique end-to-end with three chat-based human gates, an opt-in real-time judge, machine-checkable auto-promote, **eleven lifecycle hooks** that enforce the pipeline at runtime, **directive-contract pre-approval** for conformant runs, **persistent file-backed memory** that survives context compaction, and an **MCP Mem0 layer** for cross-session continuity.
 
-**Version:** 2.2.2
+**Version:** 3.0.1
 **License:** Apache 2.0
 
 ---
@@ -21,7 +21,7 @@ The `agent-pipeline-claude` marketplace is third-party. So after each new releas
 # Refresh the marketplace clone to the new release:
 cd ~/.claude/plugins/marketplaces/agent-pipeline-claude
 git pull
-git checkout v2.2.2
+git checkout v3.0.1
 
 # Install the new version into the cache + update installed_plugins.json:
 claude plugin install agent-pipeline-claude@agent-pipeline-claude
@@ -143,7 +143,7 @@ Read-only summary of a run's `.agent-runs/<run-id>/` state. Use when you need to
 v1.1 fixes the install/runtime adapter that v1.0.0–v1.0.2 got wrong. Plugin behavior, manifest schema, role files, and policy scripts are unchanged.
 
 - **Namespaced invocation is now the documented form.** Plugin skills in Claude Code are always invoked as `/<plugin-name>:<skill-name>` per the [official Claude Code plugin docs](https://code.claude.com/docs/en/plugins). The bare `/run` form documented in v1.0 was never reachable for marketplace-installed plugins. Use `/agent-pipeline-claude:run`.
-- **Single layout (`skills/`).** v1.0.1 added a `skills/` mirror alongside `commands/`, causing every skill to register twice and Cowork's resolver to fail on bare names. v1.1 removes `commands/` entirely. Three skills, one layout, no collisions.
+- **Single layout (`skills/`).** v1.0.1 added a `skills/` mirror alongside `commands/`, causing every skill to register twice and Cowork's resolver to fail on bare names. v1.1 removes `commands/` entirely — one layout, no double-registration, no collisions.
 - **Skills are self-contained per Codex's pattern.** Each `skills/<name>/SKILL.md` is a thin shim with frontmatter + tool-mapping notes; the canonical procedure lives in `skills/<name>/references/<name>.md`. Enforced by `scripts/check_skill_packaging.py` ported from `agent-pipeline-codex`.
 - **Marketplace manifest validates.** `marketplace.json` no longer carries an unrecognized root `description`; it lives under `metadata` per the marketplace schema.
 - **Deprecated shims are gone.** `/new-run` and `/run-pipeline` were marked deprecated in v1.0 and scheduled for v1.1 removal. They are now removed (they never functioned as shims in Cowork because v1.0.0–v1.0.2 never loaded; the deprecation theater is over).
@@ -191,13 +191,16 @@ If you don't have those yet, `/agent-pipeline-claude:pipeline-init` helps you sc
 
 ## What you get
 
-Three skills:
+Six skills:
 
 | Invocation | Purpose |
 | :--- | :--- |
-| `/agent-pipeline-claude:pipeline-init` | Onboard a project. Accepts a PRD path, a repo URL, or a description paragraph. Scaffolds `.pipelines/`, `scripts/policy/`, and `CLAUDE.md` if missing. |
 | `/agent-pipeline-claude:run "<short description>"` | Start a pipeline run. Drafts the manifest from your spec, gates on APPROVE, orchestrates end-to-end. Also: `resume <run-id>` and `status`. |
+| `/agent-pipeline-claude:pipeline-init` | Onboard a project. Accepts a PRD path, a repo URL, or a description paragraph. Scaffolds `.pipelines/`, `scripts/policy/`, and `CLAUDE.md` if missing. |
 | `/agent-pipeline-claude:audit-init` | Scaffold dual-AI audit-handoff infrastructure for projects where one AI implements and another audits. |
+| `/agent-pipeline-claude:intake` | Capture a plain-English description and draft starter artifacts (`intake.md`, `manifest.yaml`, `scope-lock.yaml`) without starting the pipeline. |
+| `/agent-pipeline-claude:mem0 <subcommand>` | Manage the Mem0 cross-session memory layer (`init`/`up`/`down`/`whoami`/`test`/`sync`/`prune`). OSS-default; Platform mode behind explicit consent. |
+| `/agent-pipeline-claude:show-run-status` | Read-only summary of a run's `.agent-runs/<run-id>/` state without resuming or mutating it. |
 
 Three default pipeline definitions:
 
@@ -318,7 +321,7 @@ That's the whole command. The skill:
 2. Picks the pipeline type (`feature` by default; `bugfix` if your description contains "bug" / "fix" / "regression"; `module-release` if it contains "release" / "ship" / "tag").
 3. Generates a run id: `YYYY-MM-DD-<slug>` from your description.
 4. Spawns the manifest-drafter subagent against your project's spec / release-plan / scope-lock / design notes.
-5. Pastes the drafted manifest in chat with a one-line summary like `"Drafted from docs/releases/v0.4-scope-lock.md §1 + docs/research/v04-slice1-design.md. 8/11 fields auto-derived, 3 hand-required."` followed by the chat gate prompt naming `APPROVE` / `REVISE` / `VIEW` as the recognized keywords.
+5. Pastes the drafted manifest in chat with a one-line summary like `"Drafted from docs/releases/v0.4-scope-lock.md §1 + docs/research/v04-slice1-design.md. 8/11 fields auto-derived, 3 need your confirmation."` followed by the chat gate prompt naming `APPROVE` / `REVISE` / `VIEW` as the recognized keywords.
 6. Waits for your reply. Parses the first non-whitespace token, case-insensitive.
 7. On `APPROVE`, orchestrates the rest of the pipeline. On `REVISE`, sends the manifest back to the drafter with your revision text (up to 5 cycles). On `VIEW`, prints the full manifest verbatim and re-asks.
 
@@ -458,7 +461,7 @@ To upgrade:
 ```
 cd ~/.claude/plugins/marketplaces/agent-pipeline-claude
 git pull
-git checkout v2.2.1
+git checkout v3.0.1
 ```
 
 Then fully quit and reopen Cowork.

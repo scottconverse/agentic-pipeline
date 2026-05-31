@@ -7,9 +7,33 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.1] — 2026-05-29
+
+**v3.0.1 — audit hardening.** A full five-role audit of v3.0.0 (0 blockers; 7 criticals across five themes) drove this release. No behavior change for a healthy run — the fixes close correctness and security gaps and bring every human-facing surface current. Backward-compatible.
+
+### Security
+
+- **Secret-redaction coverage (ENG-002 / QA-001).** `memory/redaction._DEFAULT_SECRET_PATTERNS` now matches GitHub (`ghp_`/`gho_`/`ghs_`/`ghr_`/`github_pat_`), Slack, GitLab, Google, Stripe, npm, JWT, URL-embedded, and bare-credential secrets. The prior GitHub clause required a hyphen where real tokens use an underscore, so it never matched a real PAT, and Slack/GCP/JWT/etc. were uncovered — all passed `scrub()` into the Mem0 layer. The command-scanning `hooks/hook_utils.SECRET_PATTERNS` and both `mem0-config-template.json` mirrors move in lockstep, enforced by tests (positive-block battery, hook↔memory lockstep, template==canonical parity). The fail-closed wiring was already correct; only coverage was the gap. **Operational:** a Mem0 store populated under the old patterns may already hold leaked secrets — run a one-time `/agent-pipeline-claude:mem0 prune`.
+
+### Changed
+
+- **Release-doc sync to v3.0.1 (DOC-001 / UX-001).** README, USER-MANUAL, ARCHITECTURE, the landing page, both `plugin.json`/`marketplace.json` descriptions, and all 16 script `--version` strings now report one version, guarded by a new `tests/test_version_parity.py`. The manifest descriptions drop the abandoned "three modal gates" language for "three chat-based keyword gates."
+- **Skill surface corrected (DOC-006 / UX-002).** Docs list the six live skills (`run`, `pipeline-init`, `audit-init`, `intake`, `mem0`, `show-run-status`); the README plugin-layout tree matches the directory.
+- **CHANGELOG workstream count corrected (DOC-004).** The v3.0.0 entry said "nine workstreams"; the accurate count is seven (WS-1–WS-4, WS-6–WS-8) plus P-1′. WS-5 was deferred; WS-9 was the judge layer shipped in v2.3.0.
+
+### Removed
+
+- **Deprecated `*-autonomous` skills (DOC-002 / UX-003).** `run-autonomous` and `grant-autonomous` — no-ops since v1.3.0 whose descriptions still advertised the modal gate model the product removed (and the hook layer now denies with `MODAL_BUDGET_EXCEEDED`) — are deleted from the payload and from `STALE_STANDALONE_SKILLS`. `/agent-pipeline-claude:run` is the single entry point.
+
+### Fixed (PR #39 independent re-audit)
+
+- **PreToolUse fail-closed schema (ENG-R-001).** The ENG-003 fail-closed hook emitted PermissionRequest's `hookSpecificOutput.decision.behavior` shape for PreToolUse, which the runtime ignores — so the PreToolUse deny floor still failed OPEN on a handler crash, and its test asserted the same wrong shape. It now emits `hookSpecificOutput.permissionDecision="deny"` + `permissionDecisionReason` (matching every other PreToolUse deny in the codebase); the test asserts the correct shape.
+- **Redaction ReDoS (QA-R-001).** The new URL-credential pattern backtracked quadratically — a ~200KB benign input hung `scrub()` >15s. Bounded the quantifiers (linear, and portable — atomic groups would break on operator Python < 3.11); fixed in `redaction.py` and both `mem0-config-template.json` mirrors. `tests/test_redaction_perf.py` pins sub-2s on large inputs while still blocking real credential URLs.
+- **Docs/test residue.** USER-MANUAL skill table corrected to the six live skills; `agent_decision_gate` exit-code coverage added; landing-page + role-prompt sweep residue cleared; the fail-closed test no longer depends on captured stdout.
+
 ## [3.0.0] — 2026-05-29
 
-**v3.0.0 — Opus 4.8 native.** Completes the Opus-4.8-native build. The centerpiece — the reincorporated judge layer — shipped in v2.3.0 (#29); this release lands the remaining nine workstreams. All changes are backward-compatible: every new behavior is either opt-in (gated on a file existing) or additive (absent keys preserve pre-v3 behavior). **617 passing**, forward-compat suite green (codex-pinned symbols byte-untouched), full payload-mirror parity.
+**v3.0.0 — Opus 4.8 native.** Completes the Opus-4.8-native build. The centerpiece — the reincorporated judge layer (WS-9) — shipped in v2.3.0 (#29); this release lands the remaining seven workstreams (WS-1–WS-4, WS-6, WS-7, WS-8) plus the P-1′ path-traversal hardening. (WS-5 — mid-conversation `role:system` messages replacing `additionalContext` injection — is deferred to a later release.) All changes are backward-compatible: every new behavior is either opt-in (gated on a file existing) or additive (absent keys preserve pre-v3 behavior). **617 passing**, forward-compat suite green (codex-pinned symbols byte-untouched), full payload-mirror parity.
 
 ### Added
 

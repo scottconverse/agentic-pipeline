@@ -1,0 +1,16 @@
+# agent-pipeline-claude dependencies (audit QA-005 / QA-009 / ENG-009).
+#
+# Supported Python: >= 3.10 (uses PEP 604 `X | None` and
+# `from __future__ import annotations`). CI runs 3.12; the suite also passes on
+# 3.14. Declare/raise this floor before adding stdlib-version-sensitive code.
+#
+# Runtime: the enforcement gates and Cowork hooks need PyYAML; everything else
+# is the standard library.
+pyyaml>=6.0,<7
+
+# Test-only — pinned here so CI installs a reproducible toolchain (ENG-009).
+pytest>=8.0,<9
+
+# Optional — the Mem0 cross-session memory layer (Layer B). File-backed Layer A
+# works without it; the OSS path clones mem0 at the SHA pinned in
+# vendor/VENDOR_PINS.md. Enable with:  pip install mem0ai

@@ -1,6 +1,6 @@
 # Architecture
 
-> **v2.0 update (2026-05-17):** Two architectural layers added on top of the v1.3 pipeline. See "v2.0 architecture extensions" below. The original v1.x architecture (gates, role files, judge layer, auto-promote) is preserved unchanged.
+> **Current as of v3.0.1 (2026-05-29).** This document's v2.0 architecture extensions and the v1.x stage architecture below are preserved and accurate. The v3.0.0 Opus-4.8-native extensions (per-stage model/effort binding, window-gated lean run-context, parallel independent verify/drift/critique stages, SHA-256 per-run memory integrity, and the judge layer realized at orchestrator altitude) and the v3.0.1 audit hardening ride on top of it — see the [CHANGELOG](CHANGELOG.md) for per-release detail and §"v3.0.0 architecture extensions" below.
 
 ## v2.0 architecture extensions
 
@@ -94,12 +94,51 @@ All PR #5 amendments from the codex side are present:
 
 ---
 
+## v3.0.0 architecture extensions (Opus 4.8-native)
+
+v3.0.0 completes the Opus-4.8-native build. All changes are backward-compatible: each new behavior is either opt-in (gated on a key or file being present) or additive (absent keys preserve pre-v3 behavior).
+
+### Per-stage model / effort / speed binding
+
+Each stage entry in a pipeline YAML may carry optional `model`, `effort`, and `speed` hints. When the orchestrator spawns a stage subagent it passes whichever of these are present. Two policy overlays apply on top of the per-stage hints:
+
+- **Quality bias.** The quality-critical stages — verify, drift-detect, critique, manager, and the manifest-drafter — bias to `effort: max`.
+- **Risk escalation.** Under a manifest `risk: high`, every model-bearing stage escalates to at least `effort: extra`.
+
+No model id is hardcoded; the migration is behavioral, so the binding survives future model renames.
+
+### Window-gated lean run-context
+
+On a model with a 1M-token context window, the orchestrator injects the manifest plus a **read-on-demand artifact index** rather than pasting every prior artifact inline. Two invariants hold: the full inline block remains the default whenever the detected window is not large enough, and the **critic always receives the full block** regardless of window size — its hostile cold read must not be starved of the artifacts it is auditing.
+
+### Parallel independent stages
+
+The three independent post-execution stages — verify, drift-detect, critique — fan out **concurrently** rather than serially. `stop_validator` reads each stage's state file once per call (n parses, not 2n) via a precomputed `StopValidation.active`. The stages are independent by construction (each reads the assembled artifacts; none consumes another's output), so parallelism does not change verdicts.
+
+### Context-exhaustion early warning
+
+A non-blocking `UserPromptSubmit` nudge fires at 60 / 70 / 80% of the detected context window, with per-session suppression so it does not repeat. It never blocks a turn — it is purely informational, prompting the operator to consider compaction or a fresh session.
+
+### SHA-256 per-run memory integrity
+
+Each per-run memory file carries a SHA-256 sidecar written on save and verified on reload. A tampered or corrupted memory file is **detected** at reload rather than silently trusted — closing the gap where a hand-edited `handoff_current.md` could inject false state after a compaction re-injection.
+
+### Inbound Mem0 scrub + framing
+
+Mem0 search results are scrubbed and framed on the **read path** before they reach the model's context; body-less records are dropped. This complements the existing circuit-breaker on the write path. (v3.0.1 widened the scrub pattern set to cover GitHub/Slack/GitLab/Google/Stripe/npm/JWT/URL-embedded/bare-credential secrets — see the CHANGELOG.)
+
+### Trust-boundary note (security)
+
+`_touches_outside_allowed_paths` lexically resolves the write target (`os.path.normpath`, TOCTOU-safe, works on a not-yet-existing target) and rejects `..`-escapes above the repo root and out-of-repo absolutes, with a best-effort symlink check and Windows case-folding (P-1′; the prior string-prefix check let `src/../../etc/passwd` through). v3.0.1 extends the trust boundary: the destructive-command and secret denylists normalize commands and route pipe-to-interpreter / `dd` / `mkfs` / `find -delete` / fork-bombs to the judge by default, and the PreToolUse hook fails *closed* on an internal error. The hook is non-bypassable against direct and drift attempts; the judge-approval sidecar is an orchestrator-trust mechanism, not an adversarial sandbox.
+
+---
+
 # v1.x Architecture (preserved through v2.0)
 
 How the agent-pipeline-claude plugin is organized, what runs where, and which
 artifact each stage produces.
 
-**Current version: v2.0.0.** v2.0 ("heavier-hand") adds three layers on top of the v1.3.x architecture documented below — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval with bind-after-conformance, and a Mem0 cross-session memory layer — without removing any of the v1.x gates. v1.3.x replaced the original chat-APPROVE ceremony with `AskUserQuestion` modal prompts (one click each) for the three human gates (manifest, plan, manager); v2.2.1 reverses that experiment after the operator-UX failure (Cowork's modal overlay hid chat context at gate-decision time) and restores chat-based gates with a deterministic first-token keyword grammar (`APPROVE` / `REVISE` / `REPLAN` / `BLOCK` / `VIEW`, case-insensitive). The modal-budget hook denies every `AskUserQuestion` during an active non-drafting run. v1.1 fixed the install/runtime adapter that v1.0.0–v1.0.2 got wrong (one layout, namespaced invocation, validating marketplace manifest, self-contained skills) without changing pipeline behavior. v1.0 rebuilt the user-facing surface around four load-bearing decisions (Cowork-first, spec-aware drafting, one slash skill, chat-native gates) while preserving every v0.5 hardening mechanism intact. This document describes the v1.x stage architecture that v2.0 still rides on top of; the v2.0 hook/memory/directive layers are detailed in the v2.0 CHANGELOG entry.
+**Current version: v3.0.1.** v2.0 ("heavier-hand") adds three layers on top of the v1.3.x architecture documented below — an eleven-event Cowork lifecycle hook layer, directive-contract pre-approval with bind-after-conformance, and a Mem0 cross-session memory layer — without removing any of the v1.x gates. v1.3.x replaced the original chat-APPROVE ceremony with `AskUserQuestion` modal prompts (one click each) for the three human gates (manifest, plan, manager); v2.2.1 reverses that experiment after the operator-UX failure (Cowork's modal overlay hid chat context at gate-decision time) and restores chat-based gates with a deterministic first-token keyword grammar (`APPROVE` / `REVISE` / `REPLAN` / `BLOCK` / `VIEW`, case-insensitive). The modal-budget hook denies every `AskUserQuestion` during an active non-drafting run. v1.1 fixed the install/runtime adapter that v1.0.0–v1.0.2 got wrong (one layout, namespaced invocation, validating marketplace manifest, self-contained skills) without changing pipeline behavior. v1.0 rebuilt the user-facing surface around four load-bearing decisions (Cowork-first, spec-aware drafting, one slash skill, chat-native gates) while preserving every v0.5 hardening mechanism intact. This document describes the v1.x stage architecture that v2.0 still rides on top of; the v2.0 hook/memory/directive layers are detailed in the v2.0 CHANGELOG entry.
 
 This document is for two audiences:
 

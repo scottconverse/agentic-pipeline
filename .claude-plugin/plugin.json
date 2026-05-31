@@ -3,7 +3,7 @@
       "email" : "sconverse@gmail.com",
       "name" : "Scott Converse"
    },
-   "description" : "Run multi-step Claude Code work without drift. v2.0 adds hooks-based enforcement (11 Cowork lifecycle events), directive-contract pre-approval, scope-lock authority, intake skill, persistent run memory, and an MCP Mem0 layer for cross-session continuity. Three modal gates plus hook-layer enforcement: SessionStart/UserPromptSubmit/PreToolUse/PermissionRequest/PostToolUse/PostToolUseFailure/PreCompact/PostCompact/SubagentStop/Stop/SessionEnd. Codex stays lighter; Claude takes the heavier hand.",
+   "description" : "Run multi-step Claude Code work without drift. Three chat-based keyword gates (APPROVE/REVISE/REPLAN/BLOCK/VIEW) plus a non-bypassable hook layer across 11 Cowork lifecycle events (SessionStart/UserPromptSubmit/PreToolUse/PermissionRequest/PostToolUse/PostToolUseFailure/PreCompact/PostCompact/SubagentStop/Stop/SessionEnd): directive-contract pre-approval, scope-lock authority, persistent run memory with SHA-256 integrity, an opt-in real-time judge, per-stage model/effort binding, and an MCP Mem0 cross-session layer. Codex stays lighter; Claude takes the heavier hand.",
    "homepage" : "https://github.com/scottconverse/agent-pipeline-claude",
    "keywords" : [
       "agent",
@@ -17,5 +17,5 @@
    "license" : "Apache-2.0",
    "name" : "agent-pipeline-claude",
    "repository" : "https://github.com/scottconverse/agent-pipeline-claude.git",
-   "version" : "3.0.0"
+   "version" : "3.0.1"
 }

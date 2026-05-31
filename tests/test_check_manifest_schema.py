@@ -86,7 +86,13 @@ class TestVersionFlag:
     not stale v0.5.x copies from an earlier /pipeline-init.
     """
 
-    def test_version_reports_1_2_1(self) -> None:
+    def test_version_matches_plugin_json(self) -> None:
+        # v3.0.1 (audit UX-008/QA-011): --version must report the canonical
+        # plugin.json version, not a frozen literal. tests/test_version_parity.py
+        # enforces this across every script; this is the install-shape spot-check.
+        import json
+        from pathlib import Path
+
         result = subprocess.run(
             [sys.executable, str(SCHEMA_SCRIPT), "--version"],
             capture_output=True,
@@ -94,7 +100,11 @@ class TestVersionFlag:
             check=False,
         )
         assert result.returncode == 0
-        assert "agent-pipeline-claude 1.2.1" in result.stdout
+        version = json.loads(
+            (Path(SCHEMA_SCRIPT).resolve().parents[1] / ".claude-plugin" / "plugin.json")
+            .read_text(encoding="utf-8")
+        )["version"]
+        assert f"agent-pipeline-claude {version}" in result.stdout
 
 
 # ---------------------------------------------------------------------------

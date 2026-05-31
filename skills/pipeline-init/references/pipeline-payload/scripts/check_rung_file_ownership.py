@@ -96,7 +96,7 @@ def evaluate_rung_file_ownership(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", action="version", version="agent-pipeline-claude 2.0.0")
+    parser.add_argument("--version", action="version", version="agent-pipeline-claude 3.0.1")
     parser.add_argument("--run", help="Pipeline run id under .agent-runs/.")
     parser.add_argument("--commit-message", help="Commit subject to classify before commit-msg hooks.")
     args = parser.parse_args()

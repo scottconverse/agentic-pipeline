@@ -22,13 +22,48 @@ class RedactionResult:
     reason: str = ""
 
 
+# v3.0.1 (audit ENG-002 / QA-001): the prior GitHub clause required a HYPHEN
+# (`gh[pousr]-`) where real GitHub tokens use an UNDERSCORE (`ghp_`, `gho_`,
+# `github_pat_`), so it never matched a real PAT; Slack/GitLab/Google/JWT/
+# URL-embedded/bare-credential formats were also uncovered and passed through
+# scrub() into the Mem0 layer. Coverage is widened below; the fail-closed
+# wiring (scrub() on add() and on every inbound search()) was already correct.
+# Kept in lockstep with hooks/hook_utils.SECRET_PATTERNS (see
+# tests/test_memory_layer.py::test_hook_and_memory_secret_patterns_lockstep).
 _DEFAULT_SECRET_PATTERNS: tuple[str, ...] = (
-    r"(?:sk|m0|gh[pousr])-[A-Za-z0-9_-]{20,}",
-    r"-----BEGIN [A-Z ]+PRIVATE KEY-----",
-    # AWS access keys
+    # OpenAI / Mem0 prefixed keys (hyphen-delimited)
+    r"\b(?:sk|m0)-[A-Za-z0-9_-]{20,}",
+    # GitHub personal/OAuth/server/refresh/user tokens use an UNDERSCORE
+    r"\bgh[pousr]_[A-Za-z0-9]{20,}\b",
+    # GitHub fine-grained PAT
+    r"\bgithub_pat_[A-Za-z0-9_]{20,}\b",
+    # GitLab personal access token
+    r"\bglpat-[A-Za-z0-9_-]{20,}\b",
+    # Slack bot/user/app/refresh/legacy tokens
+    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b",
+    # Google API key
+    r"\bAIza[0-9A-Za-z_-]{35}\b",
+    # AWS access key id
     r"\bAKIA[0-9A-Z]{16}\b",
-    # Generic bearer-style
+    # JSON Web Token (header.payload.signature)
+    r"\beyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}",
+    # Credentials embedded in a URL (scheme://user:pass@host). Bounded quantifiers
+    # (audit QA-R-001): the prior unbounded `[..]*://[^..]+:[^..]+@` backtracked
+    # quadratically — a 200KB benign string hung scrub() >15s. Bounds keep it
+    # linear and portable (atomic groups would break on operator Python < 3.11).
+    r"[A-Za-z][A-Za-z0-9+.\-]{0,30}://[^:@/\s]{1,128}:[^@/\s]{1,128}@",
+    # PEM private key block
+    r"-----BEGIN [A-Z ]+PRIVATE KEY-----",
+    # Generic bearer-style token
     r"\bBearer\s+[A-Za-z0-9._-]{20,}",
+    # Bare credential assignment (password=, secret:, api_key=, ...)
+    r"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret)\b\s*[:=]\s*\S{6,}",
+    # Stripe secret/restricted keys (underscore-delimited, unlike OpenAI's sk-)
+    r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b",
+    # npm access token
+    r"\bnpm_[A-Za-z0-9]{20,}\b",
+    # Google OAuth access token
+    r"\bya29\.[0-9A-Za-z_-]{20,}",
 )
 
 

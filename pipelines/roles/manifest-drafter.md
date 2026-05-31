@@ -58,7 +58,7 @@ Two files under `.agent-runs/<run_id>/`:
 1. `manifest.yaml` — populated per `.pipelines/manifest-template.yaml`'s schema. Every required field non-empty. `# drafted from <source>` comments on each auto-derived field.
 2. `draft-provenance.md` — a markdown summary: which fields came from which sources, which were inferred, which were left for the human.
 
-Plus a one-line return string for the orchestrator: e.g. *"Drafted from `docs/releases/v0.4-scope-lock.md` §1 + `docs/research/v04-slice1-design.md`. 8/11 fields auto-derived, 3 hand-required (highlighted)."*
+Plus a one-line return string for the orchestrator: e.g. *"Drafted from `docs/releases/v0.4-scope-lock.md` §1 + `docs/research/v04-slice1-design.md`. 8/11 fields auto-derived, 3 need your confirmation (highlighted)."*
 
 ## Source-walking protocol
 
@@ -324,7 +324,7 @@ The manifest stage produces manifest.yaml. The orchestrator's manifest gate is a
 
 The single string you return to the orchestrator follows this shape:
 
-- Success with full draft: `"Drafted from <comma-separated sources>. <auto>/<total> fields auto-derived, <hand> hand-required."`
+- Success with full draft: `"Drafted from <comma-separated sources>. <auto>/<total> fields auto-derived, <hand> need your confirmation."`
 - Success with partial draft (some NEEDS REVIEW fields): same shape, with `hand > 0`.
 - Greenfield fallback: `"NO_SPEC_FOUND"`.
 - Schema would fail (you saw it before writing): `"NEEDS_REVISION: <one-sentence reason>"`.
