@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+# Periodic live-assembled altitude (audit TEST-008).
+#
+# The cleanroom e2e exercises a real skill end-to-end via `claude -p
+# --plugin-dir` against Haiku — the one rung the unit suite can't fake. It
+# costs ~$0.05/run and needs an API key, so it can't run on every PR. This
+# job runs it on a weekly schedule, on release tags, and on demand, so the
+# from-scratch live-assembled altitude is exercised periodically rather than
+# never. It SKIPS (does not fail) when the ANTHROPIC_API_KEY secret is absent,
+# so forks and key-less environments are unaffected.
+name: cleanroom-e2e
+
+on:
+  schedule:
+    - cron: "0 14 * * 1"   # Mondays 14:00 UTC
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  cleanroom:
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies (pinned)
+        run: pip install -r requirements.txt
+
+      - name: Run cleanroom e2e (skips without API key)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY not set — skipping the live cleanroom e2e."
+            exit 0
+          fi
+          python -m pytest tests/ -q --tb=short -m cleanroom_e2e
