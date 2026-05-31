@@ -36,6 +36,7 @@ canonical and the installed-payload locations.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import yaml
@@ -116,6 +117,11 @@ def classify_action(
     Evaluates the classes most-restrictive-first; the first class with a
     matching rule wins. human_only_under_autonomous is reported as
     high_risk. Unmatched actions return the file's default_class.
+
+    An empty / whitespace-only command that matches no rule fails closed to
+    ``high_risk`` rather than receiving the default class's benefit of the
+    doubt (audit QA-007). A tool that matches a tool-only rule (e.g. an editor
+    classified ``reversible_write``) is unaffected.
     """
     data = config if config is not None else load_classification(config_path)
     classification = data.get("classification") or {}
@@ -125,6 +131,10 @@ def classify_action(
                 if class_name == "human_only_under_autonomous":
                     return "high_risk"
                 return class_name
+    # No rule matched. An empty / whitespace-only command is unparseable, so it
+    # fails closed to high_risk rather than the lenient default (audit QA-007).
+    if not (command or "").strip():
+        return "high_risk"
     return data.get("default_class", "reversible_write")
 
 
@@ -149,7 +159,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to action-classification.yaml (default: the sibling pipelines/ copy).",
     )
     args = parser.parse_args(argv)
-    print(classify_action(args.tool, args.command, config_path=args.config_path))
+    target = args.config_path or DEFAULT_CLASSIFICATION_PATH
+    try:
+        risk = classify_action(args.tool, args.command, config_path=args.config_path)
+    except FileNotFoundError:
+        print(f"classify_action: config not found at {target}", file=sys.stderr)
+        return 2
+    except yaml.YAMLError as exc:
+        print(f"classify_action: config parse error at {target}: {exc}", file=sys.stderr)
+        return 2
+    print(risk)
     return 0
 
 

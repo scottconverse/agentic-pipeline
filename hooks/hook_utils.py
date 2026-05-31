@@ -103,6 +103,11 @@ SECRET_PATTERNS = (
 # never). A surface-level `[1m]` marker on the model id forces 1M.
 CONTEXT_WINDOW_1M = 1_000_000
 CONTEXT_WINDOW_200K = 200_000
+# SINGLE SOURCE OF TRUTH for the 1M-context model set (audit ENG-012). Both
+# `detect_context_window` below and the lean/full run-context choice in
+# `skills/run/references/run.md` Step 7 key off this list. run.md no longer
+# re-lists the models — it points here — so the set is maintained in ONE place.
+# Add a new 1M-context model id prefix here and both consumers pick it up.
 _CONTEXT_WINDOW_1M_PREFIXES = (
     "claude-opus-4-6",
     "claude-opus-4-7",

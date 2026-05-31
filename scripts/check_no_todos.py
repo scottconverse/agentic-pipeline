@@ -6,14 +6,17 @@ Treats unfinished work-in-progress markers as a Blocker for release tagging
 — they accumulate across rungs and the "later" usually doesn't happen.
 Audit findings get queued in `next-cleanup.md` instead.
 
-This check enforces the rule for the project's source directory only.
-`tests/` and `docs/` are explicitly excluded — tests legitimately mark
-expected TODO regression cases (xfail rationale strings) and docs reference
-the markers descriptively.
+This check enforces the rule across the project's source directories,
+including `scripts/` (audit ENG-011 — the pipeline's own automation is
+source too). `tests/` and `docs/` are explicitly excluded — tests
+legitimately mark expected TODO regression cases (xfail rationale strings)
+and docs reference the markers descriptively. This file itself is excluded
+because it necessarily contains the marker words as *detection* strings, not
+as work-in-progress markers.
 
 Configure SCAN_ROOTS for your project. Defaults to scanning every directory
 under the repo root that contains Python files, excluding tests/, docs/,
-.agent-runs/, .pipelines/, scripts/, and common venv / build / cache dirs.
+.agent-runs/, .pipelines/, and common venv / build / cache dirs.
 """
 
 from __future__ import annotations
@@ -38,7 +41,14 @@ DEFAULT_EXCLUDED_DIRS = {
     "docs",
     ".agent-runs",
     ".pipelines",
-    "scripts",
+    # scripts/ is intentionally NOT excluded (audit ENG-011): the pipeline's
+    # own automation is source and must be TODO-gated like any other. This
+    # file self-excludes below since its marker words are detection strings.
+    # The pipeline-init payload is a byte-for-byte *copy* of scripts/ +
+    # pipelines/ (its canonical originals are already scanned), so the mirror
+    # tree is excluded to avoid double-scanning and re-flagging this detector's
+    # own copied marker literals.
+    "pipeline-payload",
     "node_modules",
     ".venv",
     "venv",
@@ -90,11 +100,16 @@ def main() -> int:
         print("check_no_todos: no source directories detected. PASS (vacuous).")
         return 0
 
+    self_path = Path(__file__).resolve()
     violations: list[tuple[Path, int, str]] = []
     for root in scan_roots:
         for py_file in root.rglob("*.py"):
             # Skip files under any excluded directory anywhere in the path.
             if any(part in DEFAULT_EXCLUDED_DIRS for part in py_file.parts):
+                continue
+            # Skip this detector itself — its source carries the marker words
+            # as detection strings, not as work-in-progress markers (ENG-011).
+            if py_file.resolve() == self_path:
                 continue
             try:
                 text = py_file.read_text(encoding="utf-8", errors="replace")

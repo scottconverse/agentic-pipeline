@@ -14,6 +14,32 @@ import sys
 from pathlib import Path
 
 
+def ensure_utf8_stdout() -> None:
+    """Force this process's stdout/stderr to UTF-8 (audit QA-006).
+
+    Several policy scripts print decorative Unicode (—, ✓, →). On a legacy
+    Windows console (cp1252) that mojibakes — or, worst case, raises
+    UnicodeEncodeError. Reconfiguring to UTF-8 with ``errors="replace"`` makes
+    output correct and crash-proof everywhere. Guarded so it is a no-op on
+    streams that don't support ``reconfigure`` (pytest capture, an already-
+    UTF-8 redirected pipe). Idempotent.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):  # detached / already-closed stream
+            pass
+
+
+# Apply on import. Every policy script imports this module (for
+# find_repo_root), so this single chokepoint makes the whole CLI surface
+# UTF-8-safe without an explicit call in each entry point (audit QA-006).
+ensure_utf8_stdout()
+
+
 def find_repo_root(script_file: str) -> Path:
     """Resolve the repo root, preferring the operator's project over the
     plugin install location.

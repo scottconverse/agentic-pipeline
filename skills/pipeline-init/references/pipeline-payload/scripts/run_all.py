@@ -137,7 +137,12 @@ def _declared_gates(run_id: str | None) -> set[str]:
 
 def _run(check_name: str, script_args: list[str], extra_args: list[str]) -> tuple[bool, str]:
     cmd = [sys.executable, str(THIS_DIR / script_args[0]), *script_args[1:], *extra_args]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # Decode child output as UTF-8 (audit QA-006): the checks print decorative
+    # Unicode, and a locale-default (cp1252) decode mangles it in the combined
+    # report. errors="replace" keeps a noisy byte from ever crashing the gate.
+    proc = subprocess.run(
+        cmd, capture_output=True, encoding="utf-8", errors="replace", check=False
+    )
     output = (proc.stdout or "") + (proc.stderr or "")
     return proc.returncode == 0, output.rstrip()
 
