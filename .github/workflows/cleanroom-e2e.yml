@@ -3,11 +3,11 @@
 #
 # The cleanroom e2e exercises a real skill end-to-end via `claude -p
 # --plugin-dir` against Haiku — the one rung the unit suite can't fake. It
-# costs ~$0.05/run and needs an API key, so it can't run on every PR. This
-# job runs it on a weekly schedule, on release tags, and on demand, so the
-# from-scratch live-assembled altitude is exercised periodically rather than
-# never. It SKIPS (does not fail) when the ANTHROPIC_API_KEY secret is absent,
-# so forks and key-less environments are unaffected.
+# costs ~$0.05/run, so it runs on a weekly schedule, on release tags, and on
+# demand rather than every PR. It uses whatever auth the runner's `claude` CLI
+# already has (a subscription login or an API key — either works); the test
+# self-skips when `claude` is not on PATH, so forks and bare environments are
+# unaffected.
 name: cleanroom-e2e
 
 # Quoted so static YAML tooling (yaml.safe_load) keeps this as the string key
@@ -33,12 +33,5 @@ jobs:
       - name: Install dependencies (pinned)
         run: pip install -r requirements.txt
 
-      - name: Run cleanroom e2e (skips without API key)
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          if [ -z "$ANTHROPIC_API_KEY" ]; then
-            echo "ANTHROPIC_API_KEY not set — skipping the live cleanroom e2e."
-            exit 0
-          fi
-          python -m pytest tests/ -q --tb=short -m cleanroom_e2e
+      - name: Run cleanroom e2e (skips if claude CLI is unavailable)
+        run: python -m pytest tests/ -q --tb=short -m cleanroom_e2e
